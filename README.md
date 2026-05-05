@@ -2,9 +2,9 @@
 
 Pure-PyTorch reinforcement-learning agent that learns to operate in HackTheBox-style attacker environments by interacting with target VMs and incorporating human feedback. **Built from absolute ground up — no pretrained models, no LLM dependencies, no third-party AI weights.**
 
-The full 16-week, 12-phase roadmap lives in [`PLAN.md`](PLAN.md).
+The full `16-week`, `12-phase` roadmap.
 
-To be more precise: 3.7 months => 16 weeks => 112 days, and 12 stages,
+To be more precise: `3.7 months` => `16 weeks` => `112 days`, and `12 stages`,
 before the first release!
 
 
