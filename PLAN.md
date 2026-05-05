@@ -1,20 +1,29 @@
-# Master Plan — Pure-PyTorch RL Pentesting Agent for HackTheBox
+# Master Plan — Pure-PyTorch RL Pentesting Agent (ATT&CK-aligned)
 
 ## Context
 
-You want an RL agent that learns to operate inside a HackTheBox-style attacker environment, builds skill by *doing* (interacting with target VMs over the network), and is shaped by *user feedback* (RLHF-style) on top of automated environment rewards. Constraints you set:
+You want an RL agent that learns to operate inside a HackTheBox-style attacker environment, builds skill by *doing* (interacting with target VMs over the network), and is shaped by *user feedback* (RLHF-style) on top of automated environment rewards. **The agent must work across the entire MITRE ATT&CK framework — Enterprise, Mobile, and ICS matrices.** Constraints you set:
 
 - **No pretrained models, no LLMs, no third-party AI weights.** Every parameter is initialized fresh and trained from your data.
 - **Pure PyTorch.** PyTorch + NumPy + standard infra libs only. Transformer, tokenizer, PPO, GAE, reward model, KL controller — all from scratch.
 - **Has its own critic.** Actor-critic, explicit value head, GAE returns.
+- **MITRE ATT&CK-first.** Every tool, action, demonstration, reward signal, and eval metric is tagged with ATT&CK tactic + technique IDs. Coverage of the framework is a primary success metric, not a side effect.
 - **Hardware:** RTX 3060 12 GB · 16 GB system RAM · Ryzen 7 5700G (8C/16T).
 
 Architectural decisions you confirmed up front:
-1. **Structured tool vocabulary** (~150–300 typed tool templates), not free-form token-by-token shell generation. Keeps the action space tractable on a 3060.
+1. **Structured tool vocabulary** (~150–300 typed tool templates per matrix), not free-form token-by-token shell generation. Keeps the action space tractable on a 3060.
 2. **BC warm-start *plus* cold-start RL spirit.** Pretrain on demonstrations, then PPO with curiosity (RND) + high entropy bonus so the agent keeps exploring beyond the demo distribution.
-3. **Agent + PyTorch on Windows host (uses 3060 natively); Kali attacker in WSL2 / VM over SSH; HTB targets reached via OpenVPN from inside Kali.** Cleanest GPU path, lowest virtualization overhead.
+3. **Agent + PyTorch on Windows host (uses 3060 natively); attacker tooling in WSL2 / VM over SSH; targets reached via OpenVPN (HTB), Android emulator (Mobile), or local ICS lab (OpenPLC/ConPot).** Cleanest GPU path, lowest virtualization overhead.
 
-The plan is a **16-week, 12-phase build**, ordered so each phase produces something runnable end-to-end. Earlier phases use stub components for everything they don't own yet, so you can integration-test continuously instead of bigbang at week 16.
+The plan is delivered as **three release tracks** — same model, same training loop, same RLHF stack, expanded action space and env wrappers per matrix:
+
+| Release | Weeks | Scope |
+| ------- | ----- | ----- |
+| **v0.1 — Enterprise** | 1–16 | The core 12-phase pipeline below. ATT&CK-Enterprise coverage, HTB + local Vulnhub. |
+| **v0.2 — + Mobile**   | 17–22 | Phases 13–15. Android emulator + ADB/Frida/MobSF tool registry; Mobile-specific tactic heads. |
+| **v0.3 — + ICS**      | 23–28 | Phases 16–18. OpenPLC/ConPot/GRFICSv2 lab; Modbus/S7/DNP3 tool registry; ICS tactics. |
+
+Each track produces something runnable end-to-end at every phase. Earlier phases use stub components for everything they don't own yet, so you can integration-test continuously instead of bigbang at the end.
 
 ---
 
@@ -74,6 +83,45 @@ If a phase blows the budget, fix is always one of: shrink `d_model`, gradient ch
 
 ---
 
+## MITRE ATT&CK alignment (cross-cutting)
+
+The agent doesn't get a vague "be a pentester" objective — its action space, reward signal, and evaluation are all expressed in terms of MITRE ATT&CK tactics and techniques. This is what lets us measure progress objectively across very different target types (a Linux web box, an Active Directory domain, an Android device, a PLC).
+
+### Matrices targeted
+
+| Matrix | Track | Tactics (count) | Notes |
+| ------ | ----- | --------------- | ----- |
+| **Enterprise** | v0.1 (weeks 1–16) | 14 — Reconnaissance, Resource Development, Initial Access, Execution, Persistence, Privilege Escalation, Defense Evasion, Credential Access, Discovery, Lateral Movement, Collection, Command and Control, Exfiltration, Impact | The HTB-native matrix. Covers Windows / Linux / macOS / Cloud / SaaS / Containers / Network / IaaS sub-platforms. |
+| **Mobile**     | v0.2 (weeks 17–22) | 14 — same names as Enterprise but mobile-specific techniques | Android-focused (iOS dynamic instrumentation needs jailbroken devices we won't model). Tooling: ADB, Frida, MobSF, drozer, jadx, apktool. |
+| **ICS**        | v0.3 (weeks 23–28) | 12 — Initial Access, Execution, Persistence, Privilege Escalation, Evasion, Discovery, Lateral Movement, Collection, Command and Control, Inhibit Response Function, Impair Process Control, Impact | Industrial control / OT. Lab: OpenPLC, ConPot honeypot, GRFICSv2 simulator. Tools: modbus-cli, plcscan, smod, snap7-cli. |
+
+### Cross-cutting design rules
+
+1. **Every tool in every registry YAML carries an `attack:` block.** Required keys: `matrices` (subset of `[enterprise, mobile, ics]`), `tactics` (list of `TA0xxx` IDs), `techniques` (list of `Txxxx` or `Txxxx.xxx` sub-technique IDs). Loader rejects tools missing this block.
+
+2. **The policy's tool head is matrix-aware.** A learned matrix-embedding (3-way) is concatenated to the trunk hidden state before the tool-logit projection. The same trunk handles all three matrices; only a small per-matrix bias adapts. This is what lets us add Mobile and ICS without retraining the trunk from scratch.
+
+3. **Reward shaping includes a coverage bonus.** Beyond environment rewards (flag, shell, file), the reward function adds:
+   - `+0.05` first time a new technique is exercised in the current episode.
+   - `+0.20` first time a new tactic is *completed* (at least one technique under it succeeds).
+   - These bonuses anneal over training so the agent eventually optimizes for *outcomes*, not just *techniques attempted*. Critical to prevent the agent from shallowly running every tool just for the bonus.
+
+4. **Eval metrics are organized by matrix and tactic.** The Phase 11 eval harness reports per-matrix:
+   - **Technique attempt coverage** — % of techniques tagged in the registry that the agent has at least once executed successfully across all eval episodes.
+   - **Tactic completion rate** — for each tactic, % of eval episodes in which at least one technique under it succeeded.
+   - **Killchain depth** — max sequential tactics chained within a single episode (e.g., Recon → Initial Access → Execution → Discovery → Privilege Escalation = depth 5).
+   - **Cross-tactic transfer** — train on tactics A,B,C, hold out tactic D, measure D performance.
+
+5. **Demonstrations are stratified by tactic.** Phase 5 demo collection requires at least 50 trajectories per tactic per matrix before BC pretraining starts. Otherwise the BC prior over-represents discovery/recon (the easy stuff) and under-represents privilege-escalation/lateral-movement.
+
+### Out-of-scope for this plan
+
+- Auto-generating exploits (T1588.005, T1588.006). The agent invokes existing exploits via `searchsploit` / `msfconsole`; it does not write new ones. Generating novel exploits is a separate research project.
+- Adversary infrastructure (Resource Development tactic TA0042). The agent uses pre-provisioned infrastructure (Kali host); it does not register domains or compromise third-party hosts. Out of scope for ethical and legal reasons in this project.
+- Real-time defender evasion against EDR. The reward function rewards *not getting blocked* but does not learn novel evasion techniques (Defense Evasion tactic TA0005 is partially covered — only via existing tools like `proxychains`, `obfuscated payloads from msfvenom`).
+
+---
+
 ## Phase 0 — Project bootstrap (Week 1)
 
 **Goal:** Empty repo → working dev loop with logging, config, lint, and a one-liner that says "GPU detected, env reachable, hello world."
@@ -119,26 +167,43 @@ RL-for-HTB/
 
 ## Phase 1 — Action vocabulary & tool schema (Week 2)
 
-**Goal:** Define what the agent *can do*. This is the most important design artifact in the project — it bounds reward density, exploration, and model size.
+**Goal:** Define what the agent *can do* and tag it to MITRE ATT&CK. This is the most important design artifact in the project — it bounds reward density, exploration, model size, *and* coverage metrics.
 
 ### Approach
-- Author a YAML schema per tool in `src/htbrl/tools/registry/`. ~150 tools to start, expandable.
-- Each entry has: tool name, category (recon/web/exploit/post-exploit/lateral/cleanup), command template with `{slot}` placeholders, slot types (enum / int range / ip / port / wordlist-id / free-string / file-path), default values, expected runtime cap, output parser ID.
+- Author YAML schemas per tool in `src/htbrl/tools/registry/`, one file per tool family. **v0.1 target: ~200 Enterprise-matrix tools** covering all 14 tactics with at least 5 distinct techniques per tactic. v0.2 adds ~80 Mobile tools, v0.3 adds ~60 ICS tools.
+- Each entry has: tool name, category, command template with `{slot}` placeholders, slot types (enum / int range / ip / port / cidr / wordlist-id / free-string / file-path / hostname / hash), default values, expected runtime cap, output parser ID, `requires_root` flag, **and a required `attack:` metadata block** (matrices, tactics, techniques).
 - Slot types let the policy emit *typed* parameters: most slots are categorical (small vocab), only a few are free-text (filenames, custom commands).
 - Validation layer: reject out-of-range params before sending to the env. This is critical — it gives the policy bounded "syntactic" guarantees and prevents wasting rollout time on broken commands.
 
+### ATT&CK metadata schema (required per tool)
+```yaml
+attack:
+  matrices: [enterprise]            # subset of [enterprise, mobile, ics]
+  tactics: [TA0007]                 # one or more TA0xxx IDs (Discovery here)
+  techniques: [T1135, T1018]        # one or more Txxxx[.xxx] IDs
+```
+Loader rejects any tool missing this block. Loader exposes:
+- `vocab.tools_for_technique(T1046)` — list[ToolDefinition]
+- `vocab.tools_for_tactic(TA0007)` — list[ToolDefinition]
+- `vocab.tools_for_matrix("enterprise")` — list[ToolDefinition]
+- `vocab.coverage_summary()` — dict mapping technique ID → tool count (for "are we missing any tactics?" CI checks)
+
 ### Critical files
-- `src/htbrl/tools/schema.py` — pydantic models for tool definitions and parameter types.
-- `src/htbrl/tools/registry/*.yaml` — one file per tool family.
-- `src/htbrl/tools/loader.py` — loads & validates the registry at startup, builds the action embedding index.
+- `src/htbrl/tools/schema.py` — pydantic models for tool definitions, parameter types, and `AttackTags`.
+- `src/htbrl/tools/registry/*.yaml` — one file per tool family. Suggested v0.1 split: `recon.yaml`, `enum.yaml`, `web.yaml`, `initial_access.yaml`, `execution.yaml`, `persistence.yaml`, `privesc.yaml`, `defense_evasion.yaml`, `credential_access.yaml`, `discovery.yaml`, `lateral_movement.yaml`, `collection.yaml`, `c2.yaml`, `exfil.yaml`, `impact.yaml`. (One file per tactic keeps reviews scoped.)
+- `src/htbrl/tools/loader.py` — loads & validates the registry at startup, builds the action embedding index, exposes ATT&CK lookups.
+- `src/htbrl/tools/coverage.py` — generates a coverage report (pretty-printed table + machine-readable JSON) for CI gating.
 
 ### Action embedding scheme
-- Tool ID → learned embedding (≈300 vectors of `d_model=384` ≈ 460 K params).
+- **Matrix embedding:** 3 learned vectors (Enterprise, Mobile, ICS), each `d_model=384`. Selected at episode start based on the env's matrix.
+- **Tool ID → learned embedding** (≈350 vectors after v0.3, `d_model=384` ≈ 540 K params).
 - Each slot value → its own learned embedding table (sized to the slot's vocab); free-text slots use the BPE tokenizer from Phase 2.
-- Policy output: a tool-ID logit vector + per-tool-conditioned slot heads. Action sampling is autoregressive across slots within a tool (small loop, ≤8 slots typical).
+- Policy output: matrix-conditioned tool-ID logit vector + per-tool-conditioned slot heads. Action sampling is autoregressive across slots within a tool (small loop, ≤8 slots typical).
+- Tools tagged with multiple matrices (e.g., `nmap` works for Enterprise *and* ICS reconnaissance) appear in both tool-ID spaces but share the same embedding row — saves params and lets the trunk transfer knowledge.
 
 ### Verification
-- `pytest tests/tools/test_registry.py`: every YAML loads, every template renders correctly with sample params, every parser parses its example output without crashing.
+- `pytest tests/tools/test_registry.py`: every YAML loads, every template renders correctly with sample params, every tool has a valid `attack:` block, every parser parses its example output without crashing.
+- `python scripts/coverage_report.py`: prints per-tactic tool count; CI fails if any Enterprise tactic has < 5 tools (configurable threshold per matrix).
 
 ---
 
@@ -208,15 +273,23 @@ Round-trip on 10 k random shell-output samples: `decode(encode(x)) == x` byte-pe
 - **Action executor:** takes structured action `{tool, slots}`, renders to a bash command via the registry template, runs with timeout, captures stdout/stderr/exit-code.
 - **Output parser registry:** per-tool parsers (regex-based for nmap port lists, gobuster paths, smbclient share lists, etc.) → structured features. Both raw text and parsed features go into the next observation.
 - **Reward shaping primitives** (auto rewards, *not* the learned RM yet — that's Phase 8):
-  - `+0.1` first time a new open port is discovered on a target.
-  - `+0.2` first time a new service version is fingerprinted.
-  - `+0.5` first user shell.
-  - `+1.0` user flag captured (regex `[a-f0-9]{32}` written by env on read).
-  - `+1.5` root/SYSTEM shell.
-  - `+2.0` root flag captured.
-  - `−0.01` per command (encourages efficiency).
-  - `−0.1` per timed-out command.
-  - `−0.5` per detected reset condition (target unreachable, defender alert if simulated).
+  - **Outcome rewards** (the dominant signal):
+    - `+0.1` first time a new open port is discovered on a target.
+    - `+0.2` first time a new service version is fingerprinted.
+    - `+0.5` first user shell.
+    - `+1.0` user flag captured (regex `[a-f0-9]{32}` written by env on read).
+    - `+1.5` root/SYSTEM shell.
+    - `+2.0` root flag captured.
+  - **ATT&CK coverage rewards** (annealed — strong early, weak late, so the agent first explores breadth then optimizes for outcomes):
+    - `+0.05` first time a new technique is exercised in the current episode.
+    - `+0.20` first time a new tactic is *completed* in this episode (at least one technique under it succeeds).
+    - `+0.50` first time the agent chains 5+ tactics in a single episode (kill-chain depth bonus).
+    - All three are scaled by `coverage_anneal(t) = max(0.1, 1.0 − t / 5_000_000)` over training steps.
+  - **Penalties**:
+    - `−0.01` per command (encourages efficiency).
+    - `−0.1` per timed-out command.
+    - `−0.5` per detected reset condition (target unreachable, defender alert if simulated).
+- **ATT&CK tracking:** the env keeps a per-episode set of techniques attempted + techniques succeeded (a technique "succeeds" iff its tool returns a non-empty parsed observation, configurable per tool). Exposed in `info["attack"]` on every step for logging.
 - **Episode lifecycle:** `reset()` reverts the target to a known snapshot (HTB doesn't allow this directly — for development we use local Vulnhub/Metasploitable in `vmrun`/`virsh`; for HTB we accept episodes are non-resettable and rotate boxes).
 - **Safety guardrails:** target IP allowlist (env refuses to act on anything outside the configured CIDR — prevents accidental scans of real internet during exploration); rate limiter; per-episode wall-clock cap.
 
@@ -396,28 +469,40 @@ r_total = r_env  +  α · r_rm  +  β · r_rnd  −  c · KL(π ‖ π_ref)
 
 ## Phase 11 — Evaluation harness (Week 15)
 
-**Goal:** Rigorous, automated evaluation. No more "looks good in tensorboard" judgments.
+**Goal:** Rigorous, automated evaluation organized by MITRE ATT&CK matrix and tactic. No more "looks good in tensorboard" judgments.
 
 ### Eval suite
-- 15 held-out boxes (10 easy, 5 medium) — *never seen during training, BC, or RM labeling*.
-- Per box, 5 evaluation episodes (different starting seeds/timeouts).
-- Metrics:
-  - **Foothold rate:** % of episodes where user shell achieved.
-  - **Root rate:** % of episodes where root/SYSTEM achieved.
-  - **User-flag-time / root-flag-time:** median wall-clock to capture (episodes that fail count as cap+1).
-  - **Command efficiency:** flags-per-action.
-  - **KL-from-BC:** how far the policy drifted.
-  - **Vocab coverage:** % of tools used at least once across all eval episodes (low coverage → policy collapse).
+- **Enterprise:** 15 held-out boxes (10 easy, 5 medium) — *never seen during training, BC, or RM labeling*.
+- **Mobile (v0.2):** 8 held-out APKs from publicly-available crackme + intentionally-vulnerable apps (e.g., DIVA, InsecureBankv2).
+- **ICS (v0.3):** 5 held-out OpenPLC+ConPot scenarios with synthetic process logic.
+- Per target, 5 evaluation episodes (different starting seeds/timeouts).
+
+### Metrics
+- **Outcome metrics:**
+  - **Foothold rate** — % of episodes where the agent achieves user-level access (Enterprise: shell; Mobile: app code execution; ICS: PLC config read).
+  - **Root rate** — % of episodes with privileged access (Enterprise: root/SYSTEM; Mobile: device admin; ICS: PLC write/control).
+  - **Flag/objective time** — median wall-clock to capture or completion (failures count as cap+1).
+  - **Command efficiency** — flags-per-action.
+- **ATT&CK coverage metrics (per matrix):**
+  - **Technique attempt coverage** — % of registered techniques the agent has executed *successfully* at least once across all eval episodes.
+  - **Tactic completion rate** — for each of the 14/14/12 tactics, fraction of episodes in which the agent completed it.
+  - **Killchain depth** — distribution of max sequential tactics chained per episode (median + p90).
+  - **Cross-tactic transfer** — train on tactics A,B,C, hold out tactic D, measure D performance after fine-tune.
+- **Health metrics:**
+  - **KL-from-BC** — how far the policy drifted from the BC reference.
+  - **Vocab coverage** — % of tools used at least once (low coverage → policy collapse).
 - Regression tests: gate any merge to `main` on no metric regressing > 5 % vs the previous tagged release.
 
 ### Critical files
 - `src/htbrl/eval/harness.py` — eval runner.
 - `src/htbrl/eval/metrics.py` — metric definitions.
+- `src/htbrl/eval/attack_metrics.py` — ATT&CK-specific aggregations.
 - `scripts/eval.py` — CLI: `python scripts/eval.py --checkpoint ckpt/v3.pt --suite eval_v1.yaml`.
+- `scripts/coverage_report.py` — pretty-prints per-tactic technique coverage.
 - `tests/regression/` — pinned eval baselines.
 
 ### Verification
-Manual: run eval on Phase 9 checkpoint, confirm metrics are computed and CSV written. Then on Phase 10 checkpoint, confirm regression test gate works.
+Manual: run eval on Phase 9 checkpoint, confirm metrics are computed and CSV written, ATT&CK heatmap rendered (one cell per technique × success rate). Then on Phase 10 checkpoint, confirm regression test gate works.
 
 ---
 
@@ -436,42 +521,161 @@ Wipe `~/.cache/htbrl` and a virtualenv, follow the README from scratch, reach a 
 
 ---
 
+# ===== v0.2 — Mobile matrix (weeks 17–22) =====
+
+## Phase 13 — Mobile attacker setup + tool registry (Weeks 17–18)
+
+**Goal:** Set up the Android attack lab and a Mobile-matrix tool registry.
+
+### Lab
+- **Android emulator:** Genymotion or Android Studio AVD with x86_64 Android 11/12 image. Runs on Windows host (uses CPU virtualization — no GPU pressure). One emulator per parallel env, capped at 4 concurrent (2 GB RAM each).
+- **Tool stack on Kali:** ADB (already there), Frida + frida-server, MobSF (running as a Docker container — analysis API), drozer, jadx, apktool, Objection, AndroBugs.
+- **Sample target apps:** vulnerable Android crackmes from public sources (DIVA, InsecureBankv2, OWASP Goatdroid, vuldroid). All open-source, intentionally vulnerable, no IP issues.
+
+### Mobile tool registry (`registry/mobile_*.yaml`)
+- ~80 tools across 14 Mobile-matrix tactics. Examples:
+  - **Initial Access:** `apk_install_via_adb`, `frida_inject`, `mobsf_static_analysis`.
+  - **Discovery:** `adb_list_packages`, `objection_classes`, `drozer_attack_surface`.
+  - **Credential Access:** `apk_extract_strings`, `frida_dump_keychain`, `objection_keychain_dump`.
+  - **Collection:** `adb_pull_app_data`, `mobsf_dynamic_logs`.
+  - **Exfiltration:** `adb_pull_database`, `frida_intercept_https`.
+- Each tool tagged `matrices: [mobile]` (a few — like `nmap` of the emulator's IP — are `[enterprise, mobile]`).
+
+### Critical files
+- `src/htbrl/env/mobile_env.py` — Mobile Gymnasium env (ADB-driven, not SSH).
+- `src/htbrl/env/adb_session.py` — ADB session wrapper analogous to ssh_session.
+- `src/htbrl/env/parsers/mobsf.py`, `parsers/objection.py`, `parsers/drozer.py`.
+- `src/htbrl/tools/registry/mobile_*.yaml`.
+
+### Verification
+Hand-scripted policy installs DIVA, runs MobSF static analysis, parses output. Episode reward > 0; ADB sessions release cleanly. `pytest tests/mobile/` covers the new tools.
+
+---
+
+## Phase 14 — Mobile model expansion + cross-matrix training (Week 19)
+
+**Goal:** Extend the policy to handle the Mobile action space without forgetting Enterprise.
+
+### Approach
+- Freeze the trunk + Enterprise tool embeddings. Add Mobile tool embedding rows + Mobile matrix-embedding bias.
+- Fine-tune on a 70/30 mix of Enterprise/Mobile rollouts. Tight KL penalty against the Enterprise-trained reference policy keeps the trunk stable.
+- New PPO config: `configs/train/ppo_mobile.yaml` with mobile-specific reward annealing (Mobile flags are subtler — successful data-exfil from a sandboxed app is the rough analog of a root flag).
+
+### Verification
+- Mobile foothold rate (app instrumented or static analysis succeeded) ≥ 50 % on held-out Mobile suite.
+- **No regression** on Enterprise eval suite (≥ 95 % of pre-expansion metrics preserved).
+
+---
+
+## Phase 15 — Mobile RM + RLHF (Weeks 20–22)
+
+**Goal:** Mobile-specific human feedback (different "good behavior" than Enterprise — e.g., Frida hooking that crashes the app is bad even if it leaks data).
+
+- Reuse the FastAPI feedback UI; add Mobile rendering pages (decompiled snippets, MobSF reports, ADB logs).
+- Train a Mobile reward model (4-layer transformer like Enterprise RM) on ~600 Mobile preference comparisons.
+- Composite reward: `r_env + α·r_rm_mobile + β·r_rnd − c·KL`. Same structure, separate RM per matrix.
+
+### Verification
+Held-out preference accuracy ≥ 65 % on the Mobile RM. RLHF Mobile agent beats non-RLHF Mobile agent on human-eval blind comparison.
+
+---
+
+# ===== v0.3 — ICS matrix (weeks 23–28) =====
+
+## Phase 16 — ICS lab + tool registry (Weeks 23–24)
+
+**Goal:** Stand up an OT/ICS lab the agent can safely poke at, and a tool registry for the 12 ICS tactics.
+
+### Lab
+- **OpenPLC** running a synthetic ladder-logic process (e.g., a tank-fill PLC program from public examples). Modbus TCP exposed.
+- **ConPot** as a SCADA / Siemens S7 honeypot — gives the agent a Siemens-flavored target without buying real hardware.
+- **GRFICSv2** (the Graphical Realism Framework for ICS Security) for a more realistic multi-PLC water-treatment scenario. Runs in VirtualBox on the Windows host.
+- All ICS targets on a dedicated isolated `192.168.95.0/24` network. **The IP allowlist makes it physically impossible for the agent to touch a real ICS device** — the env refuses any action against an IP outside this CIDR.
+
+### ICS tool registry (`registry/ics_*.yaml`)
+- ~60 tools across 12 ICS tactics. Examples:
+  - **Discovery:** `plcscan`, `nmap_modbus_nse`, `s7scan`, `enip_scan`.
+  - **Initial Access:** `modbus_login_default`, `s7_default_creds`.
+  - **Persistence / Impair Process Control:** `modbus_write_coil`, `s7_upload_block` (only allowed against the lab CIDR, with extra confirmation flag in config).
+  - **Inhibit Response Function:** `modbus_force_listen_only_mode`.
+  - **Collection:** `modbus_read_holding_registers`, `s7_data_block_read`.
+- Tools tagged `matrices: [ics]`. Some (network probes) shared with Enterprise.
+
+### Critical files
+- `src/htbrl/env/ics_env.py` — ICS Gymnasium env. Runs against the lab CIDR, refuses everything else.
+- `src/htbrl/env/parsers/modbus.py`, `parsers/s7.py`.
+- `src/htbrl/tools/registry/ics_*.yaml`.
+
+### Safety
+- `configs/env/ics.yaml` requires an explicit `allowlist_cidr: 192.168.95.0/24` and an `i_understand_this_can_break_real_industrial_systems: true` flag. Loader refuses to start the ICS env without both. This is overkill for a local lab but I want it impossible to misuse the registry against unintended targets.
+
+### Verification
+Hand-scripted policy: nmap → plcscan → modbus_read_holding_registers → modbus_write_coil. Tank-level register changes; OpenPLC log confirms write. No traffic leaves the lab CIDR (verified via `tshark` capture on the host).
+
+---
+
+## Phase 17 — ICS model expansion (Week 25)
+
+Same recipe as Phase 14 but for ICS: add ICS tool embeddings + matrix bias, freeze trunk, fine-tune on 60/20/20 Enterprise/Mobile/ICS rollouts. Verify no regression on prior matrices.
+
+---
+
+## Phase 18 — ICS RM + cross-matrix RLHF + final eval (Weeks 26–28)
+
+- Train an ICS reward model on ~400 preferences (smaller because the action space is smaller; "did the agent achieve process-control disruption *without* causing a real-world-equivalent safety event" is the central judgment call).
+- Final eval suite runs all three matrices end-to-end. Produces a single ATT&CK heatmap PDF + JSON with per-matrix per-tactic per-technique success rates. This is the deliverable.
+
+---
+
 ## Critical files reference (final)
 
 These are the files most likely to need iteration; biased toward the algorithmic core:
 
 - `src/htbrl/model/transformer.py`, `model/policy.py`, `model/heads.py`
 - `src/htbrl/algo/ppo.py`, `algo/gae.py`, `algo/rnd.py`, `algo/kl_ctrl.py`, `algo/rlhf.py`
-- `src/htbrl/env/htb_env.py`, `env/ssh_session.py`, `env/rewards.py`
-- `src/htbrl/tools/registry/*.yaml`, `tools/loader.py`
+- `src/htbrl/env/htb_env.py`, `env/mobile_env.py`, `env/ics_env.py`, `env/ssh_session.py`, `env/adb_session.py`, `env/rewards.py`
+- `src/htbrl/tools/registry/*.yaml`, `tools/loader.py`, `tools/coverage.py`
 - `src/htbrl/tokenizer/bpe.py`
 - `src/htbrl/rm/model.py`
 - `src/htbrl/feedback/server.py`
-- `scripts/train_bc.py`, `train_ppo.py`, `train_rm.py`, `eval.py`
+- `src/htbrl/eval/attack_metrics.py`
+- `scripts/train_bc.py`, `train_ppo.py`, `train_rm.py`, `eval.py`, `coverage_report.py`
 
 ---
 
 ## Verification (end-to-end)
 
-The plan is correct if at week 16 you can:
+### v0.1 (week 16) — Enterprise gate
 1. `python scripts/smoke_test.py` exits 0 (Phase 0 sanity).
 2. `pytest -q` passes (per-phase unit + integration tests).
-3. `python scripts/eval.py --checkpoint ckpt/final.pt --suite eval_v1.yaml` produces a CSV showing **foothold rate ≥ 60 %** and **user-flag rate ≥ 30 %** on the held-out easy boxes — without ever having pretrained on or used an external model.
+3. `python scripts/eval.py --checkpoint ckpt/final.pt --suite eval_v1.yaml` shows on the held-out Enterprise boxes:
+   - **Foothold rate ≥ 60 %**, **user-flag rate ≥ 30 %**.
+   - **ATT&CK technique attempt coverage ≥ 40 %** of registered Enterprise techniques.
+   - **Tactic completion** ≥ 1 in at least 8 of 14 Enterprise tactics across the eval suite.
+   - **Median killchain depth ≥ 3** tactics.
 4. The feedback UI at `localhost:8765` lets you label new pairs, retrain the RM in ≤ 30 min on the 3060, and the next PPO iteration uses the new RM.
 5. Peak VRAM during full training stays under 11 GB; CPU saturates around 70–80 % during rollout.
+6. No pretrained model or external LLM was used at any step — `git log -p` over the codebase has zero downloads of model weights or pretrained tokenizer files.
+
+### v0.2 (week 22) — Mobile gate
+- Mobile foothold rate ≥ 50 %; **no Enterprise regression** (each Enterprise metric within 5 % of v0.1 baseline).
+- ATT&CK technique attempt coverage ≥ 30 % across Mobile-matrix techniques.
+
+### v0.3 (week 28) — ICS gate (final)
+- ICS objective rate ≥ 50 % (process-control read or controlled write achieved).
+- **No regression on Enterprise or Mobile** (within 5 % of prior baselines).
+- Final ATT&CK heatmap PDF generated covering all three matrices.
 
 ---
 
 ## Risk register (so we don't fool ourselves)
 
 - **HTB doesn't allow snapshot/reset.** Mitigation: develop on local Vulnhub/Metasploitable + custom Docker lab; HTB is for *evaluation*, not training reset loops. Phase 4 already accounts for this.
-- **Demonstration data is the bottleneck.** If you can't sustain 800–1500 trajectories, BC will be weak and PPO will struggle. Mitigation: start collecting demos *during* Phase 1–2, not waiting for Phase 5.
-- **Reward hacking the RM.** Mitigation: KL hard cap + scheduled RM refresh + RM-min ensemble in Phase 9.
+- **Demonstration data is the bottleneck.** If you can't sustain 800–1500 trajectories per matrix, BC will be weak and PPO will struggle. Mitigation: start collecting demos *during* Phase 1–2, not waiting for Phase 5. For Mobile/ICS, demonstration coverage is the rate-limiter on each track's start.
+- **Reward hacking the RM.** Mitigation: KL hard cap + scheduled RM refresh + RM-min ensemble in Phase 9. ATT&CK coverage bonus also vulnerable to gaming (agent runs every tool once for the bonus); mitigated by aggressive annealing schedule.
 - **3060 thermal throttling on long runs.** Mitigation: target ≤ 80 °C; cap `power_limit` via `nvidia-smi -pl` if needed; checkpoint every 100 k steps so a thermal trip costs < 30 min.
 - **Action vocabulary is too narrow.** Mitigation: schema is hot-loadable; new tools can be added between training runs without retraining the whole policy (only the tool-embedding row for new tools is fresh, rest is reused — described in Phase 1's embedding scheme).
-
----
-
-## Note on "save in same directory"
-
-This plan is currently saved at `C:\Users\Hmm\.claude\plans\let-s-build-a-carefully-keen-shell.md` (required by plan mode). Once you approve the plan, I will copy it to `C:\Users\Hmm\Desktop\RL-for-HTB\PLAN.md` so it lives next to the project as you asked.
+- **Cross-matrix catastrophic forgetting.** Adding Mobile/ICS could degrade Enterprise performance. Mitigation: freeze trunk during expansion (Phases 14, 17), use mixed-matrix rollouts with ratios tuned per phase, gate releases on no-regression test.
+- **ICS lab safety.** A misconfigured allowlist or a pivot through a host with two NICs could let the agent reach a real industrial network. Mitigation: physically isolated VirtualBox network for ICS lab; double-flag config (allowlist CIDR *and* the explicit `i_understand_this_can_break_real_industrial_systems: true`); the env literally refuses to start without both.
+- **Mobile emulator ↔ GPU contention.** Genymotion uses CPU virtualization, so emulator + PyTorch don't fight for VRAM, but they *do* fight for RAM. Mitigation: cap concurrent Mobile envs at 4 (8 GB total emulator RAM) so the rollout buffer + transformer activations still fit in remaining 8 GB.
+- **Timeline scope creep.** 28 weeks is aggressive across three matrices. Mitigation: each track has a hard release gate; if v0.1 (Enterprise) slips past week 16 by > 4 weeks, defer Mobile/ICS to a v1.x rather than compress quality.

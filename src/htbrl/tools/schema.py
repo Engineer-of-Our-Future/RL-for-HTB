@@ -1,19 +1,27 @@
 """Tool registry schema (Phase 1).
 
 This module defines the typed action vocabulary the policy chooses from. Every
-tool has a fixed name, a bash command template with named slots, and a typed
-slot definition for each slot. The policy emits a (tool_id, slot_values) tuple;
-the loader in `loader.py` validates and renders that into a runnable command.
+tool has a fixed name, a bash command template with named slots, a typed slot
+definition for each slot, and a required MITRE ATT&CK metadata block tagging
+which matrix / tactics / techniques the tool implements. The policy emits a
+(tool_id, slot_values) tuple; the loader in `loader.py` validates and renders
+that into a runnable command, and exposes ATT&CK lookups for curriculum +
+coverage metrics.
 
 Why typed slots: a free-form text policy on consumer hardware is not feasible
 to train from scratch. Constraining each slot to a small typed vocabulary
 collapses the action space by orders of magnitude and lets the per-slot heads
 in the model use ordinary categorical sampling.
+
+Why ATT&CK metadata is required: coverage of the framework is a primary success
+metric (see PLAN.md "MITRE ATT&CK alignment"). Untagged tools would be invisible
+to coverage metrics and curriculum stratification.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import re
 from enum import Enum
 from typing import Annotated, Any, Literal, Union
 
@@ -28,6 +36,67 @@ class Category(str, Enum):
     POST_EXPLOIT = "post-exploit"
     LATERAL = "lateral"
     CLEANUP = "cleanup"
+
+
+class Matrix(str, Enum):
+    """Which MITRE ATT&CK matrix a tool applies to."""
+    ENTERPRISE = "enterprise"
+    MOBILE = "mobile"
+    ICS = "ics"
+
+
+# Tactic ID format: TA0001 .. TA9999. Real ATT&CK uses TA0001-TA0043+ but we
+# don't hard-code the exact set so new tactics added by MITRE don't break the
+# loader. Validation just enforces shape.
+_TACTIC_RE = re.compile(r"^TA\d{4}$")
+
+# Technique ID: T1234 or sub-technique T1234.567. Same shape rule, no hard list.
+_TECHNIQUE_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
+
+
+class AttackTags(BaseModel):
+    """MITRE ATT&CK tagging for a tool.
+
+    Required on every tool definition. The schema only checks the *shape* of
+    tactic / technique IDs - we don't ship a pinned copy of the ATT&CK
+    framework, because MITRE evolves it and we want new IDs to "just work."
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    matrices: list[Matrix] = Field(min_length=1)
+    tactics: list[str] = Field(min_length=1)
+    techniques: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate(self) -> "AttackTags":
+        # Deduplicate while preserving the order the YAML author wrote (handy
+        # for diffs / readability).
+        def _dedup(xs):
+            seen = set()
+            out = []
+            for x in xs:
+                if x not in seen:
+                    seen.add(x)
+                    out.append(x)
+            return out
+
+        self.matrices = _dedup(self.matrices)
+        self.tactics = _dedup(self.tactics)
+        self.techniques = _dedup(self.techniques)
+
+        for t in self.tactics:
+            if not _TACTIC_RE.match(t):
+                raise ValueError(
+                    f"invalid tactic ID {t!r}; expected shape 'TAxxxx' (e.g. TA0007)"
+                )
+        for t in self.techniques:
+            if not _TECHNIQUE_RE.match(t):
+                raise ValueError(
+                    f"invalid technique ID {t!r}; expected 'Txxxx' or 'Txxxx.xxx' "
+                    f"(e.g. T1046 or T1595.002)"
+                )
+        return self
 
 
 # ----- slot type definitions ---------------------------------------------------
@@ -191,6 +260,7 @@ class ToolDefinition(BaseModel):
     output_parser_id: str = "raw"
     requires_root: bool = False
     requires_target_in_allowlist: bool = True
+    attack: AttackTags
     example_invocation: dict[str, Any] | None = None
     example_output: str = ""
 

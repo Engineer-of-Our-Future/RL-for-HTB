@@ -1,4 +1,8 @@
 # Service enumeration - inspecting specific services after recon.
+# Most of these run from the attacker host against a target service; they
+# correspond to ATT&CK Discovery (TA0007). Some hit credential-adjacent
+# territory (anonymous logins, default community strings) and pick up
+# Credential Access (TA0006) tags too.
 
 tools:
   - name: smbclient_list
@@ -9,6 +13,10 @@ tools:
       - { name: ip, type: ip, description: SMB host }
     runtime_cap_seconds: 60
     output_parser_id: smbclient
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0007]
+      techniques: [T1135]
     example_invocation: { ip: 10.10.10.5 }
     example_output: |
             Sharename       Type      Comment
@@ -25,6 +33,10 @@ tools:
       - { name: ip, type: ip, description: SMB target }
     runtime_cap_seconds: 300
     output_parser_id: enum4linux
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0007]
+      techniques: [T1018, T1087.002, T1135, T1069.002]
     example_invocation: { ip: 10.10.10.5 }
     example_output: |
       [+] Users via RPC on 10.10.10.5
@@ -43,6 +55,10 @@ tools:
         default: enumdomusers
     runtime_cap_seconds: 60
     output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0007]
+      techniques: [T1087.002, T1018, T1069.002]
     example_invocation: { ip: 10.10.10.5, cmd: enumdomusers }
     example_output: |
       user:[Administrator] rid:[0x1f4]
@@ -55,6 +71,10 @@ tools:
       - { name: ip, type: ip, description: LDAP host }
     runtime_cap_seconds: 60
     output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0007]
+      techniques: [T1018, T1087.002, T1069.002]
     example_invocation: { ip: 10.10.10.5 }
     example_output: |
       namingContexts: DC=htb,DC=local
@@ -67,6 +87,10 @@ tools:
       - { name: ip, type: ip, description: FTP host }
     runtime_cap_seconds: 30
     output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0007, TA0006]
+      techniques: [T1083, T1078.001]
     example_invocation: { ip: 10.10.10.5 }
     example_output: |
       drwxr-xr-x   2 0 0 4096 May 01  2024 pub
@@ -81,13 +105,17 @@ tools:
         type: enum
         description: starting OID branch
         values:
-          - "1.3.6.1.2.1.1"            # system info
-          - "1.3.6.1.2.1.25.4.2.1.2"   # running processes
-          - "1.3.6.1.2.1.25.6.3.1.2"   # installed software
-          - "1.3.6.1.4.1.77.1.2.25"    # users (Windows)
+          - "1.3.6.1.2.1.1"
+          - "1.3.6.1.2.1.25.4.2.1.2"
+          - "1.3.6.1.2.1.25.6.3.1.2"
+          - "1.3.6.1.4.1.77.1.2.25"
         default: "1.3.6.1.2.1.1"
     runtime_cap_seconds: 120
     output_parser_id: lines
+    attack:
+      matrices: [enterprise, ics]
+      tactics: [TA0007, TA0006]
+      techniques: [T1057, T1518, T1078.001]
     example_invocation: { ip: 10.10.10.5, oid: "1.3.6.1.2.1.1" }
     example_output: |
       iso.3.6.1.2.1.1.1.0 = STRING: "Linux target 5.10"
@@ -100,6 +128,10 @@ tools:
       - { name: ip, type: ip, description: NFS host }
     runtime_cap_seconds: 30
     output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0007]
+      techniques: [T1135]
     example_invocation: { ip: 10.10.10.5 }
     example_output: |
       /home/share *
@@ -113,5 +145,9 @@ tools:
       - { name: port, type: port, description: SSH port, default: 22 }
     runtime_cap_seconds: 10
     output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0043, TA0007]
+      techniques: [T1592.002]
     example_invocation: { ip: 10.10.10.5, port: 22 }
     example_output: "SSH-2.0-OpenSSH_8.4p1 Debian"

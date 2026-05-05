@@ -1,4 +1,7 @@
 # Web enumeration & probing tools.
+# These mostly fall under Reconnaissance (TA0043) since they're directed at
+# externally-reachable web services. Active fuzz/scan tools also pick up
+# Vulnerability Scanning (T1595.002) or Wordlist Scanning (T1595.003) sub-techs.
 
 tools:
   - name: curl_head
@@ -11,6 +14,10 @@ tools:
       - { name: path, type: file_path, description: URL path starting with /, default: / }
     runtime_cap_seconds: 30
     output_parser_id: http_headers
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0043]
+      techniques: [T1592.002, T1595.002]
     example_invocation: { ip: 10.10.10.5, port: 80, path: / }
     example_output: |
       HTTP/1.1 200 OK
@@ -26,6 +33,10 @@ tools:
       - { name: path, type: file_path, description: URL path, default: / }
     runtime_cap_seconds: 30
     output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0043]
+      techniques: [T1592.002, T1071.001]
     example_invocation: { ip: 10.10.10.5, port: 80, path: / }
     example_output: "<html><body>Index</body></html>"
 
@@ -47,6 +58,10 @@ tools:
         default: "/usr/share/wordlists/dirb/common.txt"
     runtime_cap_seconds: 600
     output_parser_id: gobuster
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0043]
+      techniques: [T1595.003]
     example_invocation: { ip: 10.10.10.5, port: 80, wordlist: "/usr/share/wordlists/dirb/common.txt" }
     example_output: |
       /admin                (Status: 301)
@@ -69,6 +84,10 @@ tools:
         default: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
     runtime_cap_seconds: 600
     output_parser_id: ffuf
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0043]
+      techniques: [T1595.003, T1590.001]
     example_invocation:
       ip: 10.10.10.5
       port: 80
@@ -88,6 +107,10 @@ tools:
       - { name: port, type: port, description: web port, default: 80 }
     runtime_cap_seconds: 700
     output_parser_id: nikto
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0043]
+      techniques: [T1595.002]
     example_invocation: { ip: 10.10.10.5, port: 80 }
     example_output: |
       + Server may leak inodes via ETags
@@ -101,6 +124,10 @@ tools:
       - { name: port, type: port, description: web port, default: 80 }
     runtime_cap_seconds: 60
     output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0043]
+      techniques: [T1592.002, T1595.002]
     example_invocation: { ip: 10.10.10.5, port: 80 }
     example_output: |
       http://10.10.10.5 [200 OK] Apache[2.4.51], Country[RESERVED]
@@ -114,6 +141,10 @@ tools:
       - { name: port, type: port, description: web port, default: 80 }
     runtime_cap_seconds: 600
     output_parser_id: wpscan
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0043]
+      techniques: [T1595.002, T1592.002]
     example_invocation: { ip: 10.10.10.5, port: 80 }
     example_output: |
       [+] WordPress version 5.8 identified
@@ -127,6 +158,10 @@ tools:
       - { name: port, type: port, description: web port, default: 80 }
     runtime_cap_seconds: 15
     output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0043]
+      techniques: [T1592.002]
     example_invocation: { ip: 10.10.10.5, port: 80 }
     example_output: |
       User-agent: *

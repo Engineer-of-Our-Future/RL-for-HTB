@@ -8,11 +8,14 @@ name, deterministic across runs) and provides:
 - name <-> id mapping
 - safe rendering of (tool_id, slot_values) -> bash command string
 - typed validation of slot values prior to rendering
+- MITRE ATT&CK lookups (by tactic, technique, matrix) and a coverage summary
+  for curriculum + eval metrics
 """
 
 from __future__ import annotations
 
 import ipaddress
+from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -27,6 +30,7 @@ from .schema import (
     HostnameSlot,
     IntSlot,
     IpSlot,
+    Matrix,
     PortListSlot,
     PortSlot,
     Slot,
@@ -88,6 +92,79 @@ class ActionVocabulary:
         if not (0 <= tool_id < len(self._tools)):
             raise ToolNotFoundError(tool_id)
         return self._tools[tool_id].name
+
+    # ---- MITRE ATT&CK lookups ------------------------------------------------
+
+    def tools_for_technique(self, technique_id: str) -> list[ToolDefinition]:
+        """Return all tools tagged with the given technique ID (e.g. 'T1046').
+
+        Sub-techniques are matched exactly: 'T1595.002' returns only tools
+        explicitly tagged with that sub-technique, not parents.
+        """
+        return [t for t in self._tools if technique_id in t.attack.techniques]
+
+    def tools_for_tactic(self, tactic_id: str) -> list[ToolDefinition]:
+        """Return all tools tagged with the given tactic ID (e.g. 'TA0007')."""
+        return [t for t in self._tools if tactic_id in t.attack.tactics]
+
+    def tools_for_matrix(self, matrix: str | Matrix) -> list[ToolDefinition]:
+        """Return all tools applicable to the given matrix.
+
+        A tool that's tagged with multiple matrices (e.g. nmap for both
+        Enterprise and ICS reconnaissance) shows up in each lookup.
+        """
+        m = Matrix(matrix) if isinstance(matrix, str) else matrix
+        return [t for t in self._tools if m in t.attack.matrices]
+
+    @property
+    def all_tactics(self) -> list[str]:
+        """Sorted unique list of every tactic ID covered by the registry."""
+        s: set[str] = set()
+        for t in self._tools:
+            s.update(t.attack.tactics)
+        return sorted(s)
+
+    @property
+    def all_techniques(self) -> list[str]:
+        """Sorted unique list of every technique ID covered by the registry."""
+        s: set[str] = set()
+        for t in self._tools:
+            s.update(t.attack.techniques)
+        return sorted(s)
+
+    def coverage_summary(self) -> dict[str, dict[str, int]]:
+        """Per-matrix tool-count breakdown by tactic and technique.
+
+        Returns:
+            {
+                "<matrix_name>": {
+                    "tactics":    {<tactic_id>: <tool_count>, ...},
+                    "techniques": {<technique_id>: <tool_count>, ...},
+                    "tools":      <total tool count for this matrix>,
+                },
+                ...
+            }
+
+        Used by `scripts/coverage_report.py` and CI to gate that no tactic is
+        understaffed in the registry.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for matrix in Matrix:
+            tactics = Counter()
+            techniques = Counter()
+            n_tools = 0
+            for t in self._tools:
+                if matrix not in t.attack.matrices:
+                    continue
+                n_tools += 1
+                tactics.update(t.attack.tactics)
+                techniques.update(t.attack.techniques)
+            out[matrix.value] = {
+                "tactics": dict(tactics),
+                "techniques": dict(techniques),
+                "tools": n_tools,
+            }
+        return out
 
     # ---- rendering -----------------------------------------------------------
 
