@@ -47,7 +47,6 @@ python scripts\smoke_test.py
 ## Project layout
 ```
 RL-for-HTB/
-├── PLAN.md                   # full 16-week roadmap (read this first)
 ├── pyproject.toml
 ├── README.md (this file)
 ├── configs/                  # Hydra configs (model/, train/, env/, rm/)
