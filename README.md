@@ -5,6 +5,7 @@ Pure-PyTorch reinforcement-learning agent that learns to operate in HackTheBox-s
 The full 16-week, 12-phase roadmap lives in [`PLAN.md`](PLAN.md).
 
 A more precise plan before the first release:
+
 The plan is broken down into 3.7 months => 16 weeks => 112 days, and 12 stages.
 
 ## Hardware target
