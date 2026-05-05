@@ -78,4 +78,4 @@ If you need to add a dependency, ask: *does this ship pretrained weights or use 
 The env wrapper enforces a **target-IP allowlist** in every config. The agent will refuse to launch a tool against any IP outside the configured CIDR. This prevents an exploration-driven policy from accidentally scanning the public internet during rollouts. Always double-check `configs/env/<your-config>.yaml` before running training.
 
 ## License
-Proprietary. Personal-use project — see `pyproject.toml`. If you want to use this project, just replace the name in the pyproject.toml file in the line authors = [{ name = "Hmm" }]
+Proprietary. Personal-use project — see `pyproject.toml`. If you want to use this project, just replace the name in the `pyproject.toml` file in the line `authors = [{ name = "Hmm" }]`
