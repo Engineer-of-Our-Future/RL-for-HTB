@@ -1,0 +1,23 @@
+# Force LF line endings repo-wide so Windows + Linux contributors don't fight
+# CRLF/LF on every commit. Generated artifacts are still ignored via .gitignore.
+* text=auto eol=lf
+
+*.py     text eol=lf
+*.pyi    text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.toml   text eol=lf
+*.md     text eol=lf
+*.txt    text eol=lf
+*.cfg    text eol=lf
+*.ini    text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+
+# Binary stuff (none right now, but be explicit so future contributors stay safe).
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.pt    binary
+*.ckpt  binary
+*.safetensors binary

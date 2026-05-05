@@ -1,0 +1,116 @@
+# Recon tools - external probing of a target before commitment.
+# Slot defaults bias toward fast, low-noise scans suitable for a learning agent.
+
+tools:
+  - name: nmap_quick_tcp
+    category: recon
+    description: Fast TCP SYN scan of the top 1000 ports.
+    command_template: "nmap -sS -T4 --top-ports 1000 -oN /tmp/nmap-{ip}.txt {ip}"
+    slots:
+      - { name: ip, type: ip, description: target IPv4/IPv6 address }
+    runtime_cap_seconds: 180
+    output_parser_id: nmap
+    requires_root: true
+    example_invocation: { ip: 10.10.10.5 }
+    example_output: |
+      Nmap scan report for 10.10.10.5
+      Host is up (0.020s latency).
+      PORT     STATE SERVICE
+      22/tcp   open  ssh
+      80/tcp   open  http
+      Nmap done: 1 IP address scanned in 4.02 seconds
+
+  - name: nmap_full_tcp
+    category: recon
+    description: All-port TCP scan with version detection. Slow but exhaustive.
+    command_template: "nmap -sS -sV -T4 -p- -oN /tmp/nmap-full-{ip}.txt {ip}"
+    slots:
+      - { name: ip, type: ip, description: target IP }
+    runtime_cap_seconds: 1800
+    output_parser_id: nmap
+    requires_root: true
+    example_invocation: { ip: 10.10.10.5 }
+    example_output: |
+      PORT     STATE SERVICE VERSION
+      22/tcp   open  ssh     OpenSSH 8.4p1 Debian
+      80/tcp   open  http    Apache httpd 2.4.51
+
+  - name: nmap_targeted_ports
+    category: recon
+    description: Service+version scan against a specific list of ports.
+    command_template: "nmap -sV -sC -p {ports} -oN /tmp/nmap-svc-{ip}.txt {ip}"
+    slots:
+      - { name: ip, type: ip, description: target IP }
+      - { name: ports, type: port_list, description: comma-separated port list }
+    runtime_cap_seconds: 600
+    output_parser_id: nmap
+    requires_root: true
+    example_invocation: { ip: 10.10.10.5, ports: "22,80,443" }
+    example_output: |
+      22/tcp open ssh
+      80/tcp open http
+
+  - name: nmap_udp_top
+    category: recon
+    description: UDP scan of the top 100 ports - finds DNS, SNMP, NTP, TFTP.
+    command_template: "nmap -sU --top-ports 100 -oN /tmp/nmap-udp-{ip}.txt {ip}"
+    slots:
+      - { name: ip, type: ip, description: target IP }
+    runtime_cap_seconds: 600
+    output_parser_id: nmap
+    requires_root: true
+    example_invocation: { ip: 10.10.10.5 }
+    example_output: |
+      53/udp   open  domain
+      123/udp  open  ntp
+
+  - name: nmap_script_vuln
+    category: recon
+    description: Run NSE vuln scripts against open ports (after a service scan).
+    command_template: "nmap --script vuln -p {ports} -oN /tmp/nmap-vuln-{ip}.txt {ip}"
+    slots:
+      - { name: ip, type: ip, description: target IP }
+      - { name: ports, type: port_list, description: ports to test }
+    runtime_cap_seconds: 900
+    output_parser_id: nmap
+    requires_root: false
+    example_invocation: { ip: 10.10.10.5, ports: "80,443" }
+    example_output: |
+      | http-csrf:
+      |   Found the following CSRF vulnerabilities
+
+  - name: ping_sweep
+    category: recon
+    description: ICMP ping a CIDR to find live hosts before deeper scanning.
+    command_template: "nmap -sn -oN /tmp/sweep-{cidr}.txt {cidr}"
+    slots:
+      - { name: cidr, type: cidr, description: "subnet, e.g. 10.10.10.0/24" }
+    runtime_cap_seconds: 300
+    output_parser_id: nmap
+    requires_root: false
+    example_invocation: { cidr: 10.10.10.0/24 }
+    example_output: |
+      Nmap scan report for 10.10.10.5
+      Host is up.
+
+  - name: dns_lookup
+    category: recon
+    description: Forward DNS lookup of a hostname.
+    command_template: "dig +short {host}"
+    slots:
+      - { name: host, type: hostname, description: hostname to resolve }
+    runtime_cap_seconds: 30
+    output_parser_id: lines
+    example_invocation: { host: "target.htb" }
+    example_output: "10.10.10.5"
+
+  - name: reverse_dns
+    category: recon
+    description: Reverse DNS lookup of an IP.
+    command_template: "dig +short -x {ip}"
+    slots:
+      - { name: ip, type: ip, description: target IP }
+    runtime_cap_seconds: 30
+    output_parser_id: lines
+    example_invocation: { ip: 10.10.10.5 }
+    example_output: "target.htb."

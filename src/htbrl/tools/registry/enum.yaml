@@ -1,0 +1,117 @@
+# Service enumeration - inspecting specific services after recon.
+
+tools:
+  - name: smbclient_list
+    category: enum
+    description: List SMB shares exposed by a host (anonymous or with creds).
+    command_template: "smbclient -L //{ip} -N --option=client_min_protocol=NT1"
+    slots:
+      - { name: ip, type: ip, description: SMB host }
+    runtime_cap_seconds: 60
+    output_parser_id: smbclient
+    example_invocation: { ip: 10.10.10.5 }
+    example_output: |
+            Sharename       Type      Comment
+            ---------       ----      -------
+            ADMIN$          Disk      Remote Admin
+            IPC$            IPC       Remote IPC
+            public          Disk      Public files
+
+  - name: enum4linux_quick
+    category: enum
+    description: enum4linux-ng quick mode - users, shares, policies via SMB.
+    command_template: "enum4linux-ng -A {ip}"
+    slots:
+      - { name: ip, type: ip, description: SMB target }
+    runtime_cap_seconds: 300
+    output_parser_id: enum4linux
+    example_invocation: { ip: 10.10.10.5 }
+    example_output: |
+      [+] Users via RPC on 10.10.10.5
+      index: 0x1f4 RID: 0x1f4 acb: 0x00000010 Account: Administrator
+
+  - name: rpcclient_anon
+    category: enum
+    description: Probe RPC null-session for user/group info.
+    command_template: "rpcclient -U '' -N {ip} -c '{cmd}'"
+    slots:
+      - { name: ip, type: ip, description: RPC host }
+      - name: cmd
+        type: enum
+        description: rpcclient subcommand
+        values: [enumdomusers, enumdomgroups, querydominfo, getdompwinfo, srvinfo]
+        default: enumdomusers
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    example_invocation: { ip: 10.10.10.5, cmd: enumdomusers }
+    example_output: |
+      user:[Administrator] rid:[0x1f4]
+
+  - name: ldapsearch_anon
+    category: enum
+    description: Anonymous LDAP search of naming contexts (rootDSE).
+    command_template: "ldapsearch -x -H ldap://{ip} -s base -b '' '(objectClass=*)'"
+    slots:
+      - { name: ip, type: ip, description: LDAP host }
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    example_invocation: { ip: 10.10.10.5 }
+    example_output: |
+      namingContexts: DC=htb,DC=local
+
+  - name: ftp_anonymous_list
+    category: enum
+    description: Test anonymous FTP and list root directory if accepted.
+    command_template: "curl -s --connect-timeout 5 ftp://anonymous:anonymous@{ip}/"
+    slots:
+      - { name: ip, type: ip, description: FTP host }
+    runtime_cap_seconds: 30
+    output_parser_id: lines
+    example_invocation: { ip: 10.10.10.5 }
+    example_output: |
+      drwxr-xr-x   2 0 0 4096 May 01  2024 pub
+
+  - name: snmpwalk_public
+    category: enum
+    description: SNMPv2 walk with the default 'public' community.
+    command_template: "snmpwalk -v2c -c public -t 2 -r 1 {ip} {oid}"
+    slots:
+      - { name: ip, type: ip, description: SNMP target }
+      - name: oid
+        type: enum
+        description: starting OID branch
+        values:
+          - "1.3.6.1.2.1.1"            # system info
+          - "1.3.6.1.2.1.25.4.2.1.2"   # running processes
+          - "1.3.6.1.2.1.25.6.3.1.2"   # installed software
+          - "1.3.6.1.4.1.77.1.2.25"    # users (Windows)
+        default: "1.3.6.1.2.1.1"
+    runtime_cap_seconds: 120
+    output_parser_id: lines
+    example_invocation: { ip: 10.10.10.5, oid: "1.3.6.1.2.1.1" }
+    example_output: |
+      iso.3.6.1.2.1.1.1.0 = STRING: "Linux target 5.10"
+
+  - name: nfs_showmount
+    category: enum
+    description: List NFS exports on the target.
+    command_template: "showmount -e {ip}"
+    slots:
+      - { name: ip, type: ip, description: NFS host }
+    runtime_cap_seconds: 30
+    output_parser_id: lines
+    example_invocation: { ip: 10.10.10.5 }
+    example_output: |
+      /home/share *
+
+  - name: ssh_banner
+    category: enum
+    description: Grab SSH banner without logging in.
+    command_template: "nc -w 3 {ip} {port} </dev/null"
+    slots:
+      - { name: ip, type: ip, description: SSH host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+    runtime_cap_seconds: 10
+    output_parser_id: raw
+    example_invocation: { ip: 10.10.10.5, port: 22 }
+    example_output: "SSH-2.0-OpenSSH_8.4p1 Debian"

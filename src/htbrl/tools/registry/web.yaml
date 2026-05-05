@@ -1,0 +1,133 @@
+# Web enumeration & probing tools.
+
+tools:
+  - name: curl_head
+    category: web
+    description: Fetch only HTTP response headers from a URL path.
+    command_template: "curl -sI --max-time 10 http://{ip}:{port}{path}"
+    slots:
+      - { name: ip, type: ip, description: web host }
+      - { name: port, type: port, description: web port, default: 80 }
+      - { name: path, type: file_path, description: URL path starting with /, default: / }
+    runtime_cap_seconds: 30
+    output_parser_id: http_headers
+    example_invocation: { ip: 10.10.10.5, port: 80, path: / }
+    example_output: |
+      HTTP/1.1 200 OK
+      Server: Apache/2.4.51
+
+  - name: curl_get
+    category: web
+    description: Fetch an HTTP body (truncated to 64KB by env wrapper).
+    command_template: "curl -s --max-time 15 -o /tmp/curl-{ip}.html http://{ip}:{port}{path} && head -c 65536 /tmp/curl-{ip}.html"
+    slots:
+      - { name: ip, type: ip, description: web host }
+      - { name: port, type: port, description: web port, default: 80 }
+      - { name: path, type: file_path, description: URL path, default: / }
+    runtime_cap_seconds: 30
+    output_parser_id: raw
+    example_invocation: { ip: 10.10.10.5, port: 80, path: / }
+    example_output: "<html><body>Index</body></html>"
+
+  - name: gobuster_dir
+    category: web
+    description: Directory brute-force against an HTTP service.
+    command_template: "gobuster dir -u http://{ip}:{port} -w {wordlist} -t 50 -q --no-color"
+    slots:
+      - { name: ip, type: ip, description: web host }
+      - { name: port, type: port, description: web port, default: 80 }
+      - name: wordlist
+        type: wordlist_id
+        description: which directory wordlist to use
+        values:
+          - "/usr/share/wordlists/dirb/common.txt"
+          - "/usr/share/wordlists/dirb/big.txt"
+          - "/usr/share/seclists/Discovery/Web-Content/common.txt"
+          - "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt"
+        default: "/usr/share/wordlists/dirb/common.txt"
+    runtime_cap_seconds: 600
+    output_parser_id: gobuster
+    example_invocation: { ip: 10.10.10.5, port: 80, wordlist: "/usr/share/wordlists/dirb/common.txt" }
+    example_output: |
+      /admin                (Status: 301)
+      /index.html           (Status: 200)
+
+  - name: ffuf_subdomain
+    category: web
+    description: VHost/subdomain fuzz via Host header.
+    command_template: "ffuf -u http://{ip}:{port}/ -H 'Host: FUZZ.{domain}' -w {wordlist} -t 60 -mc 200,301,302,403 -s"
+    slots:
+      - { name: ip, type: ip, description: web host }
+      - { name: port, type: port, description: web port, default: 80 }
+      - { name: domain, type: hostname, description: "parent domain, e.g. target.htb" }
+      - name: wordlist
+        type: wordlist_id
+        description: subdomain wordlist
+        values:
+          - "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+          - "/usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt"
+        default: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+    runtime_cap_seconds: 600
+    output_parser_id: ffuf
+    example_invocation:
+      ip: 10.10.10.5
+      port: 80
+      domain: target.htb
+      wordlist: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+    example_output: |
+      admin
+      api
+      dev
+
+  - name: nikto_basic
+    category: web
+    description: Nikto baseline web vuln scan.
+    command_template: "nikto -h http://{ip}:{port} -ask=no -nointeractive -maxtime 600"
+    slots:
+      - { name: ip, type: ip, description: web host }
+      - { name: port, type: port, description: web port, default: 80 }
+    runtime_cap_seconds: 700
+    output_parser_id: nikto
+    example_invocation: { ip: 10.10.10.5, port: 80 }
+    example_output: |
+      + Server may leak inodes via ETags
+
+  - name: whatweb
+    category: web
+    description: Fingerprint a web application.
+    command_template: "whatweb -a 3 --no-errors http://{ip}:{port}"
+    slots:
+      - { name: ip, type: ip, description: web host }
+      - { name: port, type: port, description: web port, default: 80 }
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    example_invocation: { ip: 10.10.10.5, port: 80 }
+    example_output: |
+      http://10.10.10.5 [200 OK] Apache[2.4.51], Country[RESERVED]
+
+  - name: wpscan_passive
+    category: web
+    description: WordPress passive enum (no aggressive plugin brute).
+    command_template: "wpscan --url http://{ip}:{port} --random-user-agent --no-banner --disable-tls-checks --no-update -e u,vp,vt"
+    slots:
+      - { name: ip, type: ip, description: WordPress host }
+      - { name: port, type: port, description: web port, default: 80 }
+    runtime_cap_seconds: 600
+    output_parser_id: wpscan
+    example_invocation: { ip: 10.10.10.5, port: 80 }
+    example_output: |
+      [+] WordPress version 5.8 identified
+
+  - name: robots_txt
+    category: web
+    description: Fetch robots.txt to look for hidden paths.
+    command_template: "curl -s --max-time 10 http://{ip}:{port}/robots.txt"
+    slots:
+      - { name: ip, type: ip, description: web host }
+      - { name: port, type: port, description: web port, default: 80 }
+    runtime_cap_seconds: 15
+    output_parser_id: raw
+    example_invocation: { ip: 10.10.10.5, port: 80 }
+    example_output: |
+      User-agent: *
+      Disallow: /admin/

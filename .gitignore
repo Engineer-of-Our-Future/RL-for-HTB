@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtualenvs (anchored to repo root so we don't accidentally ignore
+# src/htbrl/env/ or configs/env/, which are real package and config dirs)
+/.venv/
+/venv/
+/env/
+.env
+.envrc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project artifacts (model weights, datasets, logs — never commit)
+runs/
+checkpoints/
+ckpt/
+logs/
+data/raw/
+data/cache/
+data/demos/
+.cache/
+*.tfevents*
+*.ckpt
+*.pt
+*.safetensors
+preferences.db
+preferences.db-journal
+
+# Tokenizer artifacts (regenerable)
+tokenizer/vocab.bpe
+tokenizer/merges.txt
+
+# Hydra
+outputs/
+multirun/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Secrets — refuse to commit any of these even by accident
+*.pem
+*.key
+*.ovpn
+htb_*.ovpn
+.htb-credentials
