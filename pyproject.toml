@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "htbrl"
+version = "0.1.0"
+description = "Pure-PyTorch RL pentesting agent for HackTheBox-style environments. From-scratch transformer + actor-critic + RLHF, no pretrained models."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "Hmm" }]
+
+dependencies = [
+    "torch>=2.3,<2.6",
+    "numpy>=1.26,<2.2",
+    "gymnasium>=0.29",
+    "pexpect>=4.9",
+    "paramiko>=3.4",
+    "pyyaml>=6.0",
+    "hydra-core>=1.3",
+    "tensorboard>=2.16",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.6",
+    "tqdm>=4.66",
+    "msgpack>=1.0",
+    "msgpack-numpy>=0.4",
+    "regex>=2024.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+gpu-extras = [
+    # 8-bit AdamW optimizer states. Linux/WSL2 only; native-Windows wheels are
+    # historically unreliable. The codebase falls back to fused fp32 AdamW when
+    # bitsandbytes is unavailable.
+    "bitsandbytes>=0.43; sys_platform != 'win32'",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM"]
+ignore = ["E501", "N806"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: tests that exceed 5 s wall-clock",
+    "gpu: tests that require CUDA",
+    "ssh: tests that require a reachable Kali attacker",
+]
