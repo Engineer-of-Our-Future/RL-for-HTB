@@ -95,6 +95,13 @@ class AcademyModule:
     prerequisites: list[str] = field(default_factory=list)
     estimated_minutes: int = 0
     completed: bool = False
+    # Curriculum metadata (PLAN.md Phase 5b - path-aware ordering).
+    # category in {"general", "offensive", "defensive", "other"}.
+    # path_ids lists the academy paths this module belongs to (a single
+    # module can be in multiple paths e.g. "Pre-Employability" + "Junior
+    # Penetration Tester").
+    category: str = "other"
+    path_ids: list[str] = field(default_factory=list)
 
     @property
     def all_questions(self) -> list[AcademyQuestion]:

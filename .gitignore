@@ -59,3 +59,13 @@ desktop.ini
 *.ovpn
 htb_*.ovpn
 .htb-credentials
+.env*
+!.env.example
+*.htbrl-creds*
+.htbrl-secrets*
+**/cookies*.json
+**/*.cookies
+runs/academy/
+academy_cookies.json
+*.local.yaml
+.local/
