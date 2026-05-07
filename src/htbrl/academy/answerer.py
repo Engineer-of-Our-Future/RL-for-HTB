@@ -85,6 +85,48 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
+# Stopwords + meaningless tokens we never want to emit as an academy answer.
+# Inline-code spans in the academy sometimes contain single characters
+# ("h", ".", "/") that aren't real answers but were highlighted as part of
+# a multi-char regex / pattern in the theory text. Without this filter the
+# top candidate frequently came back as a single character with conf 0.80,
+# which would teach BC the wrong reading-comprehension policy.
+_NEVER_EMIT = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "of", "in", "on", "at", "to", "for", "by", "as", "or", "and", "but",
+    "if", "so", "do", "does", "did", "has", "have", "had",
+    "i", "me", "you", "he", "she", "it", "we", "they",
+    "this", "that", "these", "those",
+    "what", "which", "where", "when", "who", "why", "how",
+    "yes", "no",
+})
+
+
+def _is_meaningful_answer(s: str) -> bool:
+    """Reject candidates that would corrupt BC training signal.
+
+    Filters out:
+      * empty / whitespace-only strings
+      * single characters (almost always a regex highlight or stray glyph)
+      * pure punctuation (``.``, ``/``, ``-``, ``=`` etc.)
+      * common English stopwords ("the", "is", "of"...) which are
+        surprisingly common in inline-code-in-sentence matches
+
+    A long answer like ``"#100-Ubuntu SMP ..."`` (a kernel-version banner)
+    survives because it has multiple meaningful tokens.
+    """
+    s = (s or "").strip()
+    if len(s) < 2:
+        return False
+    # Punctuation / symbol only, no word characters at all.
+    if not re.search(r"\w", s):
+        return False
+    # Single English stopword.
+    if s.lower() in _NEVER_EMIT:
+        return False
+    return True
+
+
 def _expand_acronym(acronym: str, body: str) -> str | None:
     """Look for ``ACRO (Words ...)`` or ``Words ... (ACRO)`` etc. in body.
 
@@ -411,19 +453,23 @@ class HeuristicAnswerer:
         command/flag/option that the section already wrote in `<code>`. We score
         each inline code span by Jaccard with the prompt; a strong match earns
         a high-confidence candidate.
+
+        Skips spans that ``_is_meaningful_answer`` rejects (single chars,
+        punctuation-only, English stopwords) - those produced false-confident
+        garbage like ``'h'`` and ``'.'`` in earlier runs.
         """
         if not section.inline_code:
             return []
         out: list[AcademyAnswer] = []
         prompt_tokens = _tokenize(prompt)
-        # Build per-span context: each inline-code span typically appears inside
-        # a sentence that defines what it does. Find that sentence.
         body = section.body_text or ""
         sentences = re.split(r"(?<=[.!?])\s+", body)
         looks_like_command = bool(_COMMAND_HINT_RE.search(prompt))
         for code in section.inline_code:
             code = code.strip()
             if not code or len(code) > 80:
+                continue
+            if not _is_meaningful_answer(code):
                 continue
             ctx = next((s for s in sentences if code in s), "")
             ctx_score = _jaccard(prompt_tokens, _tokenize(ctx)) if ctx else 0.0
@@ -450,8 +496,9 @@ class HeuristicAnswerer:
         out: list[AcademyAnswer] = []
         # Inline codes that show up specifically in this sentence are extra
         # likely to be the literal answer (legacy strong heuristic, kept).
+        # Skip junk via ``_is_meaningful_answer``.
         for code in section.inline_code:
-            if code and code in sentence:
+            if code and code in sentence and _is_meaningful_answer(code):
                 out.append(AcademyAnswer(
                     question_id=qid, answer_text=code,
                     confidence=min(0.8, score + 0.3),
@@ -461,12 +508,14 @@ class HeuristicAnswerer:
         # Tail of the sentence, last resort but useful when nothing else fires.
         words = sentence.split()
         if words:
-            out.append(AcademyAnswer(
-                question_id=qid, answer_text=" ".join(words[-3:]),
-                confidence=min(0.4, score),
-                method="heuristic_text",
-                rationale=f"sentence tail (jaccard={score:.2f})",
-            ))
+            tail = " ".join(words[-3:])
+            if _is_meaningful_answer(tail):
+                out.append(AcademyAnswer(
+                    question_id=qid, answer_text=tail,
+                    confidence=min(0.4, score),
+                    method="heuristic_text",
+                    rationale=f"sentence tail (jaccard={score:.2f})",
+                ))
         return out
 
     def _gen_bullet_match(
@@ -488,7 +537,7 @@ class HeuristicAnswerer:
                 # First word/phrase of the bullet is often the answer
                 # ("ls — list directory contents" → answer is "ls").
                 head = item.split("—")[0].split("-")[0].split(":")[0].strip()
-                if 1 <= len(head) <= 40:
+                if 1 <= len(head) <= 40 and _is_meaningful_answer(head):
                     out.append(AcademyAnswer(
                         question_id=qid, answer_text=head,
                         confidence=min(0.55, 0.25 + score * 0.5),
@@ -507,15 +556,21 @@ class HeuristicAnswerer:
         score, sentence = best
         out: list[AcademyAnswer] = []
         for m in re.finditer(r'"([^"]{2,80})"', sentence):
+            text = m.group(1)
+            if not _is_meaningful_answer(text):
+                continue
             out.append(AcademyAnswer(
-                question_id=qid, answer_text=m.group(1),
+                question_id=qid, answer_text=text,
                 confidence=min(0.6, 0.3 + score),
                 method="quoted_in_match",
                 rationale=f"\"...\" span in best-overlap sentence",
             ))
         for m in re.finditer(r"`([^`]{2,80})`", sentence):
+            text = m.group(1)
+            if not _is_meaningful_answer(text):
+                continue
             out.append(AcademyAnswer(
-                question_id=qid, answer_text=m.group(1),
+                question_id=qid, answer_text=text,
                 confidence=min(0.6, 0.3 + score),
                 method="backtick_in_match",
                 rationale=f"`...` span in best-overlap sentence",
@@ -527,8 +582,11 @@ class HeuristicAnswerer:
     ) -> list[AcademyAnswer]:
         if len(section.inline_code) != 1:
             return []
+        code = section.inline_code[0]
+        if not _is_meaningful_answer(code):
+            return []
         return [AcademyAnswer(
-            question_id=qid, answer_text=section.inline_code[0],
+            question_id=qid, answer_text=code,
             confidence=0.4,
             method="lone_inline_code",
             rationale="section has a single inline-code span",

@@ -876,6 +876,80 @@ def test_lab_flag_detection_negative_for_theory_question():
         assert is_lab_flag_question(q) is False, f"false-positive on theory: {prompt!r}"
 
 
+# ---- junk-candidate filter (regression for "h" / "." / "/" answers) ------
+
+
+def test_propose_filters_single_char_inline_code():
+    """The earlier answerer happily emitted ``'h'`` and ``'.'`` at conf 0.80
+    when an academy section had those characters as standalone <code> spans.
+    Those are noise (regex highlights / ASCII art) and would corrupt BC.
+    The filter must reject them so the *meaningful* candidate wins instead."""
+    section = AcademySection(
+        id="s", title="grep",
+        body_text=(
+            "The grep command searches for patterns. The -i option makes "
+            "the search case-insensitive."
+        ),
+        # Mix junk with a real candidate.
+        inline_code=["h", ".", "/", "-i", "grep"],
+    )
+    q = AcademyQuestion(
+        id="q", prompt="Which option makes the search case-insensitive?",
+        type=QuestionType.TEXT,
+    )
+    cands = HeuristicAnswerer().propose(q, section, top_n=10)
+    texts = [c.answer_text for c in cands]
+    # Junk is gone:
+    assert "h" not in texts
+    assert "." not in texts
+    assert "/" not in texts
+    # Real answer survives and ranks at the top.
+    assert "-i" in texts
+    assert cands[0].answer_text == "-i"
+
+
+def test_propose_filters_pure_punctuation_inline_code():
+    section = AcademySection(
+        id="s", title="x",
+        body_text="The example uses -- and := as separators.",
+        inline_code=["--", ":=", "?", ";"],
+    )
+    q = AcademyQuestion(id="q", prompt="What separator is used?", type=QuestionType.TEXT)
+    cands = HeuristicAnswerer().propose(q, section)
+    # Pure-punctuation candidates are dropped (no \w characters).
+    assert all(c.answer_text not in {"?", ";"} for c in cands)
+
+
+def test_propose_filters_stopword_quoted_spans():
+    """A quoted span like \"the\" or \"is\" is a stopword we don't want to
+    surface as an answer."""
+    section = AcademySection(
+        id="s", title="x",
+        body_text='The token "the" appears often in English text.',
+    )
+    q = AcademyQuestion(id="q", prompt="What appears often in English?", type=QuestionType.TEXT)
+    cands = HeuristicAnswerer().propose(q, section)
+    assert all(c.answer_text.lower() != "the" for c in cands)
+
+
+def test_is_meaningful_answer_directly():
+    from htbrl.academy.answerer import _is_meaningful_answer
+    # Reject:
+    assert _is_meaningful_answer("") is False
+    assert _is_meaningful_answer(" ") is False
+    assert _is_meaningful_answer("h") is False
+    assert _is_meaningful_answer(".") is False
+    assert _is_meaningful_answer("///") is False
+    assert _is_meaningful_answer("the") is False
+    assert _is_meaningful_answer("OF") is False  # case-insensitive stopword
+    # Accept:
+    assert _is_meaningful_answer("ls") is True
+    assert _is_meaningful_answer("-i") is True
+    assert _is_meaningful_answer("--verbose") is True
+    assert _is_meaningful_answer("/etc/passwd") is True
+    assert _is_meaningful_answer("Pluggable Authentication Modules") is True
+
+
 def test_answer_uses_top_propose_candidate():
     """Legacy single-best ``answer()`` is just ``propose()[0]``."""
     section = AcademySection(
