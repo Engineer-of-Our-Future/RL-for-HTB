@@ -12,6 +12,11 @@ To enable the SSH check:
 
     HTBRL_KALI_HOST="kali@127.0.0.1:2222" python scripts/smoke_test.py     # bash
     $env:HTBRL_KALI_HOST = "kali@127.0.0.1:2222"; python scripts\smoke_test.py    # PowerShell
+
+Auth: prefers a private key via HTBRL_KALI_KEY (path to identity file).
+Falls back to HTBRL_KALI_PASSWORD if no key is set. Password auth is a
+convenience for dev setups; key auth is the recommended path for any
+shared / persistent Kali host.
 """
 
 
@@ -93,9 +98,18 @@ def _check_ssh() -> bool:
         "look_for_keys": True,
     }
     key_path = os.environ.get("HTBRL_KALI_KEY")
+    password = os.environ.get("HTBRL_KALI_PASSWORD")
     if key_path:
         # Explicit private key (e.g. ~/.ssh/htbrl_kali for the WSL Kali setup).
         connect_kwargs["key_filename"] = os.path.expanduser(key_path)
+    elif password:
+        # Fallback: password auth from env (convenient for dev setups
+        # where the operator's Kali laptop uses password login). Disable
+        # agent + key lookup so paramiko doesn't try keys first and
+        # surface a confusing AuthenticationException when no key matches.
+        connect_kwargs["password"] = password
+        connect_kwargs["allow_agent"] = False
+        connect_kwargs["look_for_keys"] = False
 
     try:
         client.connect(**connect_kwargs)

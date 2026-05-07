@@ -16,10 +16,11 @@ import ipaddress
 
 _KALI_HOST = os.environ.get("HTBRL_KALI_HOST")
 _KALI_KEY = os.environ.get("HTBRL_KALI_KEY")
+_KALI_PASSWORD = os.environ.get("HTBRL_KALI_PASSWORD")
 
 skip_if_no_kali = pytest.mark.skipif(
-    not (_KALI_HOST and _KALI_KEY),
-    reason="HTBRL_KALI_HOST or HTBRL_KALI_KEY not set",
+    not (_KALI_HOST and (_KALI_KEY or _KALI_PASSWORD)),
+    reason="HTBRL_KALI_HOST + (HTBRL_KALI_KEY or HTBRL_KALI_PASSWORD) not set",
 )
 
 
@@ -79,14 +80,32 @@ def test_htb_env_runs_nmap_against_loopback_via_kali():
 
     Allowlist includes 127.0.0.0/8 so the env permits scanning loopback.
     Actual scan is against 127.0.0.1 so we don't need a separate target VM.
+
+    Auto-skips if nmap is not installed on the Kali host (otherwise the
+    test hangs on Kali's apt "do you want to install it?" prompt and
+    eats the timeout). Install nmap with: ``sudo apt-get install -y nmap``.
     """
+    # Probe nmap presence first via a one-shot SSH call so we skip
+    # cleanly instead of timing out inside HTBEnv.
+    from htbrl.academy.ssh_runner import SshTargetRunner
     user_at_host, _, port_str = _KALI_HOST.partition(":")
     user, _, host = user_at_host.partition("@")
+    port = int(port_str) if port_str else 22
+    if _KALI_PASSWORD:
+        nmap_check = SshTargetRunner(
+            host=host, port=port, username=user, password=_KALI_PASSWORD,
+        ).run("command -v nmap")
+        if nmap_check.rc != 0 or not nmap_check.stdout.strip():
+            pytest.skip(
+                "nmap not installed on Kali host. Install with: "
+                "sudo apt-get install -y nmap"
+            )
     creds = SSHCredentials(
         host=host,
         user=user,
-        port=int(port_str) if port_str else 22,
-        identity_file=os.path.expanduser(_KALI_KEY),
+        port=port,
+        identity_file=os.path.expanduser(_KALI_KEY) if _KALI_KEY else None,
+        password=_KALI_PASSWORD,
         connect_timeout_seconds=5.0,
     )
     vocab = load_registry()
