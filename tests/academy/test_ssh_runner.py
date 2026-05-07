@@ -18,6 +18,7 @@ from htbrl.academy.ssh_runner import (
     SshResult,
     SshTargetRunner,
     parse_ssh_credentials,
+    probe_via_ssh,
 )
 
 
@@ -234,3 +235,129 @@ def test_run_many_returns_per_command_error_on_connect_failure(monkeypatch):
         assert r.cmd == expected_cmd
         assert r.error.startswith("TimeoutError")
         assert r.rc == -1
+
+
+# ---- probe_via_ssh: question-pattern dispatcher ----------------------------
+
+
+class _ScriptedRunner:
+    """SshTargetRunner stand-in that returns canned ``run`` results.
+
+    Maps each command (full string) to ``(stdout, rc)``. Records every
+    command attempted so tests can assert which patterns fired.
+    """
+
+    def __init__(self, scripted: dict[str, tuple[str, int]]):
+        self.scripted = scripted
+        self.calls: list[str] = []
+
+    def run(self, cmd: str, *, timeout_s=None) -> SshResult:
+        self.calls.append(cmd)
+        if cmd in self.scripted:
+            stdout, rc = self.scripted[cmd]
+            return SshResult(cmd=cmd, rc=rc, stdout=stdout)
+        return SshResult(cmd=cmd, rc=1, stderr="not scripted")
+
+
+def test_probe_via_ssh_kernel_version():
+    """`uname -r` shape: prompt asks for kernel version."""
+    runner = _ScriptedRunner({"uname -r": ("4.15.0-123-generic\n", 0)})
+    result = probe_via_ssh(
+        runner, "What is the kernel version of the target workstation?",
+    )
+    assert result is not None
+    answer, rationale, conf = result
+    assert answer == "4.15.0-123-generic"
+    assert "uname -r" in rationale
+    assert conf == pytest.approx(0.85)
+
+
+def test_probe_via_ssh_inode_of_path():
+    """``stat -c %i`` shape: prompt asks for the inode of /etc/shadow.bak."""
+    runner = _ScriptedRunner({"stat -c %i /etc/shadow.bak": ("265293\n", 0)})
+    result = probe_via_ssh(runner, 'What is the inode of "/etc/shadow.bak"?')
+    assert result is not None
+    assert result[0] == "265293"
+
+
+def test_probe_via_ssh_last_modified_file_in_dir():
+    """``ls -1t`` shape: last-modified file in /var/backups."""
+    runner = _ScriptedRunner({
+        "ls -1t /var/backups 2>/dev/null | head -n 1": ("apt.extended_states.0\n", 0),
+    })
+    result = probe_via_ssh(
+        runner,
+        "What is the name of the last modified file in /var/backups?",
+    )
+    assert result is not None
+    assert result[0] == "apt.extended_states.0"
+
+
+def test_probe_via_ssh_count_files_by_extension():
+    """``find / -name '*.bak'`` shape: counts files of a given extension."""
+    runner = _ScriptedRunner({
+        "find / -name '*.bak' 2>/dev/null | wc -l": ("4\n", 0),
+    })
+    result = probe_via_ssh(
+        runner,
+        'How many files exist on the system that have the ".bak" extension?',
+    )
+    assert result is not None
+    assert result[0] == "4"
+
+
+def test_probe_via_ssh_total_packages_installed():
+    """``dpkg -l | grep -c ^ii`` shape: package count."""
+    runner = _ScriptedRunner({
+        "dpkg -l 2>/dev/null | grep -c '^ii'": ("737\n", 0),
+    })
+    result = probe_via_ssh(
+        runner, "How many total packages are installed on the target system?",
+    )
+    assert result is not None
+    assert result[0] == "737"
+
+
+def test_probe_via_ssh_systemd_unit_by_description():
+    """``systemctl list-units | grep '<desc>'`` shape: find unit by description."""
+    runner = _ScriptedRunner({
+        "systemctl list-units --all --no-pager 2>/dev/null | grep -F "
+        "'Load AppArmor profiles managed internally by snapd' | awk '{print $1}'":
+            ("snapd.apparmor.service\n", 0),
+    })
+    result = probe_via_ssh(
+        runner,
+        'systemctl ... unit name with the description '
+        '"Load AppArmor profiles managed internally by snapd" as the answer.',
+    )
+    assert result is not None
+    assert result[0] == "snapd.apparmor.service"
+
+
+def test_probe_via_ssh_full_path_of_binary():
+    """``command -v xxd`` shape: full path of a binary."""
+    runner = _ScriptedRunner({
+        "command -v xxd 2>/dev/null || which xxd": ("/usr/bin/xxd\n", 0),
+    })
+    result = probe_via_ssh(
+        runner, 'Submit the full path of the "xxd" binary.',
+    )
+    assert result is not None
+    assert result[0] == "/usr/bin/xxd"
+
+
+def test_probe_via_ssh_returns_none_on_unmatched_prompt():
+    """Prompts that don't fit any known shape must return None *without*
+    issuing any SSH command (the runner shouldn't be touched)."""
+    runner = _ScriptedRunner({})
+    result = probe_via_ssh(runner, "Just a random philosophical question?")
+    assert result is None
+    assert runner.calls == []   # no shell commands executed
+
+
+def test_probe_via_ssh_returns_none_when_command_fails():
+    """When the matched command exits non-zero (or stdout is empty),
+    we don't return a phantom answer."""
+    runner = _ScriptedRunner({"uname -r": ("", 1)})
+    result = probe_via_ssh(runner, "What is the kernel version?")
+    assert result is None

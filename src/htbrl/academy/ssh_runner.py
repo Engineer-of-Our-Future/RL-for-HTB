@@ -269,9 +269,170 @@ def parse_ssh_credentials(prompt: str) -> SshPromptCreds:
     return creds
 
 
+# ---- question-pattern probe -------------------------------------------------
+
+# Map question-prompt shapes to the shell command that yields the answer.
+# Order matters: more specific patterns come first so a generic catch-all
+# at the end doesn't shadow them. Each entry is
+#   (compiled_regex, shell_command_template, postprocess_fn|None,
+#    rationale_template)
+# where ``postprocess_fn`` (if given) takes raw stdout and returns a
+# tightened answer string (e.g. strip a trailing newline, take first
+# line). Templates may contain ``{m1}``, ``{m2}`` etc to interpolate
+# regex groups.
+import re as _re
+
+
+def _strip(s: str) -> str:
+    return s.strip()
+
+
+def _first_line(s: str) -> str:
+    return s.strip().split("\n", 1)[0] if s.strip() else ""
+
+
+def _last_token(s: str) -> str:
+    """For grep-style outputs, take the rightmost whitespace-token."""
+    line = _first_line(s)
+    parts = line.split()
+    return parts[-1] if parts else ""
+
+
+_SSH_PATTERNS: list[tuple[_re.Pattern, str, callable, str]] = [
+    # uname -r style: "What is the kernel version" / "kernel" / "uname"
+    (
+        _re.compile(r"\bkernel\s+version\b", _re.IGNORECASE),
+        "uname -r",
+        _strip,
+        "uname -r",
+    ),
+    # "the inode of <path>"
+    (
+        _re.compile(r"\binode\s+of\s+(?:the\s+)?['\"`]?(/?[\w./\-]+)['\"`]?",
+                    _re.IGNORECASE),
+        "stat -c %i {m1}",
+        _strip,
+        "stat -c %i {m1}",
+    ),
+    # "the last modified file in <dir>"
+    (
+        _re.compile(
+            r"(?:last\s+modified|most\s+recent(?:ly\s+modified)?)\s+file\s+in\s+(/[\w./\-]+)",
+            _re.IGNORECASE,
+        ),
+        "ls -1t {m1} 2>/dev/null | head -n 1",
+        _first_line,
+        "ls -1t {m1} | head -1",
+    ),
+    # "name of shell <user> uses" / "what shell does <user> use"
+    (
+        _re.compile(
+            r"shell\s+(?:does|of|used\s+by|that)\s+(?:user\s+)?['\"`]?([\w.\-]+)['\"`]?",
+            _re.IGNORECASE,
+        ),
+        "getent passwd {m1} | awk -F: '{{print $NF}}' | xargs -n1 basename",
+        _first_line,
+        "getent passwd {m1} -> shell",
+    ),
+    # "How many files exist on the system that have the .X extension"
+    (
+        _re.compile(
+            r"how\s+many\s+files.{0,80}?\.([a-zA-Z0-9]{1,8})['\"`]?\s+extension",
+            _re.IGNORECASE,
+        ),
+        "find / -name '*.{m1}' 2>/dev/null | wc -l",
+        _strip,
+        "find / -name '*.{m1}' | wc -l",
+    ),
+    # "How many total packages are installed"
+    (
+        _re.compile(
+            r"how\s+many\s+(?:total\s+)?packages\s+(?:are\s+)?installed",
+            _re.IGNORECASE,
+        ),
+        "dpkg -l 2>/dev/null | grep -c '^ii'",
+        _strip,
+        "dpkg -l | grep -c ^ii",
+    ),
+    # "Use systemctl ... unit name with the description \"X\""
+    (
+        _re.compile(
+            r"description\s+['\"`]([^'\"`]{4,80})['\"`]",
+            _re.IGNORECASE,
+        ),
+        "systemctl list-units --all --no-pager 2>/dev/null | grep -F '{m1}' "
+        "| awk '{{print $1}}'",
+        _first_line,
+        "systemctl list-units | grep '{m1}'",
+    ),
+    # "the full path of the X binary" / "where is X installed"
+    (
+        _re.compile(
+            r"(?:full\s+)?path\s+(?:of|to)\s+(?:the\s+)?['\"`]?([\w.\-]+)['\"`]?\s+"
+            r"(?:binary|command|tool|executable)",
+            _re.IGNORECASE,
+        ),
+        "command -v {m1} 2>/dev/null || which {m1}",
+        _first_line,
+        "command -v {m1}",
+    ),
+    # "the name of the last modified file" (generic fallback)
+    (
+        _re.compile(
+            r"last\s+(?:modified|created|updated)\s+file",
+            _re.IGNORECASE,
+        ),
+        "ls -1t /var/backups 2>/dev/null | head -n 1",
+        _first_line,
+        "ls -1t /var/backups | head -1",
+    ),
+]
+
+
+def probe_via_ssh(
+    runner: SshTargetRunner,
+    question_prompt: str,
+    *,
+    hints: list[str] | None = None,
+) -> tuple[str, str, float] | None:
+    """Try a sequence of SSH-shell probes against ``runner`` for the prompt.
+
+    Returns ``(answer, rationale, confidence)`` on the first pattern
+    that resolves to non-empty stdout. Confidence is 0.85 -- high
+    enough to override heuristic candidates but below the 0.95 we
+    give to literal-answer-in-response HTTP probes.
+
+    Designed to be cheap: at most ONE SSH command is executed per
+    call; if the prompt doesn't match any known pattern we return
+    None without connecting.
+    """
+    hints_text = " ".join(h for h in (hints or []) if h)
+    enriched = (question_prompt or "") + (" " + hints_text if hints_text else "")
+
+    for pat, cmd_tmpl, post, rationale_tmpl in _SSH_PATTERNS:
+        m = pat.search(enriched)
+        if not m:
+            continue
+        # Interpolate regex groups into the command template.
+        groups = {f"m{i}": (m.group(i) or "") for i in range(1, 1 + (m.lastindex or 0))}
+        try:
+            cmd = cmd_tmpl.format(**groups)
+            rationale = rationale_tmpl.format(**groups)
+        except (KeyError, IndexError):
+            continue
+        result = runner.run(cmd)
+        if not result.ok:
+            continue
+        ans = post(result.stdout) if post else result.stdout.strip()
+        if ans:
+            return (ans, f"SSH {rationale!r} -> {ans!r}", 0.85)
+    return None
+
+
 __all__ = [
     "SshResult",
     "SshTargetRunner",
     "SshPromptCreds",
     "parse_ssh_credentials",
+    "probe_via_ssh",
 ]

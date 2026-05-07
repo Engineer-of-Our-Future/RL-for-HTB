@@ -68,6 +68,12 @@ from htbrl.academy.target_runner import (
     probe_code_blocks_for_flag,
     probe_target_for_answer,
 )
+from htbrl.academy.ssh_runner import (
+    SshTargetRunner,
+    parse_ssh_credentials,
+    probe_via_ssh,
+)
+from htbrl.academy.lfi_runner import probe_via_lfi
 from htbrl.academy.page_models import (
     AcademyAnswer,
     AcademyModule,
@@ -396,12 +402,41 @@ def main(argv: list[str] | None = None) -> int:
                 #      surface any HTB flag the response contains. This is
                 #      the "theory then practice" loop.
                 if target_runner is not None:
+                    # 1. HTTP-shape probe (server header / JSON field /
+                    #    auth+search / CRUD chain / etc).
                     probe = probe_target_for_answer(
                         target_runner, question.prompt,
                         section_code_blocks=section.code_blocks,
                         hints=question.hints,
                     )
                     probe_label = "TARGET-PROBE"
+                    # 2. LFI bypass dispatcher (mod 23-shaped prompts).
+                    if probe is None:
+                        probe = probe_via_lfi(
+                            target_runner, question.prompt,
+                            hints=question.hints,
+                            section_code_blocks=section.code_blocks,
+                        )
+                        if probe is not None:
+                            probe_label = "LFI-PROBE"
+                    # 3. SSH-shape probe (mod 18 / 33 ``Authenticate to <ip>
+                    #    user X password Y`` style). Creds are extracted
+                    #    from the prompt; the target IP comes from the
+                    #    section's spawned target panel.
+                    if probe is None:
+                        creds = parse_ssh_credentials(question.prompt)
+                        if creds.complete and target_info is not None:
+                            ssh = SshTargetRunner(
+                                host=creds.host or target_info.ip,
+                                username=creds.user,
+                                password=creds.password,
+                            )
+                            probe = probe_via_ssh(
+                                ssh, question.prompt, hints=question.hints,
+                            )
+                            if probe is not None:
+                                probe_label = "SSH-PROBE"
+                    # 4. Theory-driven cURL probe (replay section examples).
                     if probe is None:
                         probe = probe_code_blocks_for_flag(
                             target_runner, section.code_blocks,
