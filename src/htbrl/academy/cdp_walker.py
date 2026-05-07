@@ -650,12 +650,11 @@ _STOP_TARGET_BTN_JS = r"""
 (function(){
     // The academy renders the running-target panel with two icon-only
     // buttons:
-    //   - htb-square-button--secondary (orange refresh)  : aria-label
-    //                                                       "reset-target"
-    //   - htb-square-button--danger (red X)              : aria-label
-    //                                                       "stop-target"
-    // Match by aria-label first (most reliable), then by class string,
-    // then by visible text as last-resort fallback.
+    //   - htb-square-button--secondary (orange refresh)  aria-label
+    //                                                     "reset-target"
+    //   - htb-square-button--danger (red X)              aria-label
+    //                                                     "terminate-target"
+    // Match by aria-label first (most reliable), then class fallback.
     const btns = Array.from(document.querySelectorAll('button'));
     const cand = btns.find(b => {
         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
@@ -663,30 +662,47 @@ _STOP_TARGET_BTN_JS = r"""
         const tip = (b.getAttribute('tooltip') || '').toLowerCase();
         const cls = (b.className || '').toString();
         const t = ((b.innerText||b.textContent)||'').trim();
-        if (aria.includes('stop-target') || aria.includes('stop target')) return true;
-        if (title.includes('stop target') || tip.includes('stop target')) return true;
-        if (/^(Stop\s+the\s+target|Stop\s+Target|Stop\s+Machine)$/i.test(t)) return true;
+        if (aria.includes('terminate-target') || aria.includes('terminate target')
+            || aria.includes('stop-target') || aria.includes('stop target')) return true;
+        if (title.includes('terminate target') || title.includes('stop target')
+            || tip.includes('terminate target') || tip.includes('stop target')) return true;
+        if (/^(Stop\s+the\s+target|Stop\s+Target|Stop\s+Machine|Terminate\s+Target)$/i.test(t)) return true;
         // Fallback: the red-X danger square button inside the target panel.
-        if (cls.includes('htb-square-button--danger') && b.closest('[data-v]')) return true;
+        if (cls.includes('htb-square-button--danger')) return true;
         return false;
     });
     if (!cand) return {clicked: false, why: 'no stop button'};
     if (cand.disabled) return {clicked: false, why: 'stop button disabled'};
     cand.click();
-    return {clicked: true, text: ((cand.innerText||cand.textContent)||'').trim() || 'stop-target icon'};
+    return {clicked: true, text: ((cand.innerText||cand.textContent)||'').trim() || 'terminate-target icon'};
 })()
 """
 
 
 _STOP_CONFIRM_JS = r"""
 (function(){
-    // Some academy modules pop a "Are you sure you want to stop the
-    // target?" confirmation dialog. Click the primary confirm button
-    // if present.
+    // Clicking the red-X "terminate-target" pops a confirmation modal.
+    // Live observation on academy.hackthebox.com: the modal has a
+    // primary action button (``primary-action-btn`` class) labelled
+    // "I understand", plus a generic "Continue" / "Okay" / "Yes"
+    // pattern on other dialogs. Match by class first (most reliable),
+    // then by text label.
     const btns = Array.from(document.querySelectorAll('button'));
+    // Prefer the primary-action button class.
+    const primary = btns.find(b =>
+        (b.className || '').toString().includes('primary-action-btn')
+    );
+    if (primary) {
+        primary.click();
+        return 'clicked primary-action: ' + ((primary.innerText||primary.textContent)||'').trim();
+    }
+    // Otherwise look for an unambiguous confirm-text button. We include
+    // "I understand" / "Continue" / "Confirm" / "Terminate" / "Yes" / "OK"
+    // and exclude anything containing "cancel".
     const cand = btns.find(b => {
         const t = ((b.innerText||b.textContent)||'').trim();
-        return /^(Stop|Confirm|Yes|OK)\b/i.test(t) && !/cancel/i.test(t);
+        return /^(I\s+understand|Continue|Confirm|Yes|OK(ay)?|Terminate|Stop)\b/i.test(t)
+            && !/cancel/i.test(t);
     });
     if (cand) { cand.click(); return 'clicked: ' + (cand.innerText||cand.textContent||'').trim(); }
     return 'no confirm dialog';

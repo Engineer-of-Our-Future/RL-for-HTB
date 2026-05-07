@@ -520,9 +520,12 @@ def main(argv: list[str] | None = None) -> int:
 
             # Per-section bookkeeping: how many of THIS section's questions
             # ended up accepted? Includes both fresh accepts and the
-            # already-answered short-circuit. We use this to decide whether
-            # to stop the spawned target before moving on (operator's rule
-            # "make close target after answering successfully questions").
+            # already-answered short-circuit. Operator's rule (set live
+            # while testing module 35): "target need to be terminated
+            # every time when all questions are answered! in each section
+            # where they are!" - so we click Terminate ONLY when the
+            # section is fully solved. Partial-success leaves the target
+            # alive for follow-up.
             section_qids = {q.id for q in section.questions}
             section_subs = [s for s in submissions if s[1].question_id in section_qids]
             n_section_q = len(section.questions)
@@ -530,14 +533,15 @@ def main(argv: list[str] | None = None) -> int:
             full_section_success = (
                 n_section_q > 0 and n_section_accepted == n_section_q
             )
-            if full_section_success and target_runner is not None:
-                ok, detail = stop_target(cdp)
-                print(f"[wizard]   all {n_section_q} question(s) accepted; "
-                      f"stop_target ok={ok} detail={detail}")
-            elif n_section_q > 0 and target_runner is not None:
-                print(f"[wizard]   section partial: "
-                      f"{n_section_accepted}/{n_section_q} accepted; "
-                      f"leaving target running for follow-up")
+            if target_runner is not None:
+                if full_section_success:
+                    ok, detail = stop_target(cdp)
+                    print(f"[wizard]   all {n_section_q} question(s) accepted; "
+                          f"terminate_target ok={ok} detail={detail}")
+                elif n_section_q > 0:
+                    print(f"[wizard]   section partial: "
+                          f"{n_section_accepted}/{n_section_q} accepted; "
+                          f"leaving target running for follow-up")
 
             # advance to next section
             if section.section_total and section.section_index >= section.section_total:
