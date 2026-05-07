@@ -648,22 +648,48 @@ _SPAWN_TARGET_BTN_JS = r"""
 
 _STOP_TARGET_BTN_JS = r"""
 (function(){
-    // Either a "Stop the target system" button or the red X icon-button
-    // in the running-target panel. We match by aria-label / title /
-    // visible text - whichever the academy currently uses.
+    // The academy renders the running-target panel with two icon-only
+    // buttons:
+    //   - htb-square-button--secondary (orange refresh)  : aria-label
+    //                                                       "reset-target"
+    //   - htb-square-button--danger (red X)              : aria-label
+    //                                                       "stop-target"
+    // Match by aria-label first (most reliable), then by class string,
+    // then by visible text as last-resort fallback.
     const btns = Array.from(document.querySelectorAll('button'));
     const cand = btns.find(b => {
-        const t = ((b.innerText||b.textContent)||'').trim();
         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
         const title = (b.getAttribute('title') || '').toLowerCase();
-        return /^(Stop\s+the\s+target|Stop\s+Target|Stop\s+Machine)$/i.test(t)
-            || aria.includes('stop target')
-            || title.includes('stop target');
+        const tip = (b.getAttribute('tooltip') || '').toLowerCase();
+        const cls = (b.className || '').toString();
+        const t = ((b.innerText||b.textContent)||'').trim();
+        if (aria.includes('stop-target') || aria.includes('stop target')) return true;
+        if (title.includes('stop target') || tip.includes('stop target')) return true;
+        if (/^(Stop\s+the\s+target|Stop\s+Target|Stop\s+Machine)$/i.test(t)) return true;
+        // Fallback: the red-X danger square button inside the target panel.
+        if (cls.includes('htb-square-button--danger') && b.closest('[data-v]')) return true;
+        return false;
     });
     if (!cand) return {clicked: false, why: 'no stop button'};
     if (cand.disabled) return {clicked: false, why: 'stop button disabled'};
     cand.click();
-    return {clicked: true, text: ((cand.innerText||cand.textContent)||'').trim()};
+    return {clicked: true, text: ((cand.innerText||cand.textContent)||'').trim() || 'stop-target icon'};
+})()
+"""
+
+
+_STOP_CONFIRM_JS = r"""
+(function(){
+    // Some academy modules pop a "Are you sure you want to stop the
+    // target?" confirmation dialog. Click the primary confirm button
+    // if present.
+    const btns = Array.from(document.querySelectorAll('button'));
+    const cand = btns.find(b => {
+        const t = ((b.innerText||b.textContent)||'').trim();
+        return /^(Stop|Confirm|Yes|OK)\b/i.test(t) && !/cancel/i.test(t);
+    });
+    if (cand) { cand.click(); return 'clicked: ' + (cand.innerText||cand.textContent||'').trim(); }
+    return 'no confirm dialog';
 })()
 """
 
@@ -730,16 +756,25 @@ def spawn_target(cdp: CDPClient, *, timeout_s: float = 90.0) -> tuple[bool, Targ
 def stop_target(cdp: CDPClient) -> tuple[bool, str]:
     """Click "Stop the target system" if a target is currently running.
 
-    Best-effort: returns ``(False, "no running target")`` when nothing's
-    spawned. Doesn't poll - the academy clears the panel ~immediately on
-    click and the next ``read_target_info`` will see None.
+    Returns ``(False, "no running target")`` when nothing's spawned.
+    On success, polls briefly for the panel to clear (the academy
+    sometimes shows a confirmation dialog we need to dismiss first).
     """
     if read_target_info(cdp) is None:
         return False, "no running target"
     res = cdp.evaluate(_STOP_TARGET_BTN_JS) or {}
     if not res.get("clicked"):
         return False, str(res.get("why") or "unknown")
-    return True, str(res.get("text") or "stopped")
+    # Some modules confirm the stop with a dialog.
+    time.sleep(0.8)
+    cdp.evaluate(_STOP_CONFIRM_JS)
+    # Poll until the panel goes back to "Spawn the target system" state.
+    deadline = time.time() + 8.0
+    while time.time() < deadline:
+        time.sleep(0.5)
+        if read_target_info(cdp) is None:
+            return True, str(res.get("text") or "stopped")
+    return True, "clicked but panel still shows running after 8s"
 
 
 _UNLOCK_BUTTON_JS = r"""

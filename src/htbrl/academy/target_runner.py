@@ -62,6 +62,14 @@ class HttpTargetRunner:
     when ``scheme="https"``). Caps response bodies, follows redirects up
     to a small bound, and decodes JSON when the response Content-Type
     advertises it.
+
+    User-Agent defaults to a cURL string because many academy targets
+    explicitly check the UA and refuse non-cURL clients with the
+    response body literally being ``"Please use cURL"``. The point of
+    these academy exercises is to teach students to use cURL, so the
+    target's "anti-bot" check is part of the curriculum, not an attempt
+    to block legitimate operators - we match what a human running
+    ``curl`` would send.
     """
 
     host: str
@@ -69,6 +77,7 @@ class HttpTargetRunner:
     scheme: str = "http"        # "http" or "https"
     timeout_s: float = 12.0
     max_body_bytes: int = 1_048_576    # 1 MB - enough for any academy probe
+    user_agent: str = "curl/8.4.0"     # match a real cURL version banner
 
     @property
     def base_url(self) -> str:
@@ -100,7 +109,7 @@ class HttpTargetRunner:
         """
         url = self.base_url.rstrip("/") + "/" + path.lstrip("/") if path else self.base_url
         req_headers: dict[str, str] = {
-            "User-Agent": "htbrl-academy-runner/0.1",
+            "User-Agent": self.user_agent,
             "Accept": "*/*",
         }
         if headers:
@@ -231,8 +240,169 @@ __all__ = [
     "HttpTargetRunner",
     "extract_header_value",
     "extract_json_field",
+    "extract_curl_commands",
+    "probe_code_blocks_for_flag",
     "probe_target_for_answer",
 ]
+
+
+# ---- theory-driven probing -------------------------------------------------
+#
+# Academy modules teach by example: every section that requires a target
+# also shows the cURL / HTTP commands to run against it inside ``<pre>`` /
+# ``<code>`` blocks. Treat those code blocks as TEACHING - the model reads
+# the theory first (just like a human would), then practices by running
+# the same commands the section showed. This is the "theory then practice"
+# loop the operator asked for.
+
+
+def extract_curl_commands(code_blocks: list[str]) -> list[dict]:
+    """Parse cURL-shaped commands from a section's code blocks.
+
+    Returns a list of dicts with the fields the HTTP runner needs:
+      ``{"method": "GET", "path": "/", "headers": {...}, "data": <bytes|str|None>}``
+
+    Robust against HTB Academy's CSS-obfuscated shell prompts (the
+    academy interleaves invisible characters into the displayed
+    "student@htb[/htb]$" so naive copy-paste produces strings like
+    ``"S5sherS4stem@htb[/htb]$ curl ..."``). We just locate the first
+    ``curl`` token in each line and parse from there, ignoring any
+    prompt prefix.
+    """
+    out: list[dict] = []
+    for blk in code_blocks or []:
+        text = (blk or "").strip()
+        # Code blocks often join multiple commands with newlines or ``\\``
+        # line continuations. Normalize backslash-newlines first so a
+        # multi-line ``curl ... \`` flag block parses as one command.
+        text = _re.sub(r"\\\s*\n\s*", " ", text)
+        for raw_line in text.splitlines():
+            # Find the first ``curl`` token in the line, allowing an
+            # arbitrary obfuscated prompt before it.
+            m = _re.search(r"\bcurl\b", raw_line)
+            if not m:
+                continue
+            line = raw_line[m.start():].strip()
+            parsed = _parse_curl(line)
+            if parsed:
+                out.append(parsed)
+    return out
+
+
+def _parse_curl(line: str) -> dict | None:
+    """Parse one ``curl ...`` line into a runner-shaped dict."""
+    import shlex
+    try:
+        tokens = shlex.split(line, posix=True)
+    except ValueError:
+        return None
+    if not tokens or tokens[0].lower() != "curl":
+        return None
+    method = "GET"
+    headers: dict[str, str] = {}
+    data: str | None = None
+    url: str | None = None
+    i = 1
+    while i < len(tokens):
+        t = tokens[i]
+        if t in ("-X", "--request") and i + 1 < len(tokens):
+            method = tokens[i + 1].upper()
+            i += 2; continue
+        if t in ("-H", "--header") and i + 1 < len(tokens):
+            h = tokens[i + 1]
+            if ":" in h:
+                k, v = h.split(":", 1)
+                headers[k.strip()] = v.strip()
+            i += 2; continue
+        if t in ("-d", "--data", "--data-raw", "--data-binary") and i + 1 < len(tokens):
+            data = tokens[i + 1]
+            if method == "GET":
+                method = "POST"
+            i += 2; continue
+        if t in ("-b", "--cookie") and i + 1 < len(tokens):
+            headers["Cookie"] = tokens[i + 1]
+            i += 2; continue
+        if t in ("-A", "--user-agent") and i + 1 < len(tokens):
+            headers["User-Agent"] = tokens[i + 1]
+            i += 2; continue
+        if t in ("-u", "--user") and i + 1 < len(tokens):
+            import base64 as _b64
+            creds = tokens[i + 1]
+            headers["Authorization"] = "Basic " + _b64.b64encode(
+                creds.encode("utf-8")
+            ).decode("ascii")
+            i += 2; continue
+        if t in ("-s", "-S", "-v", "-i", "-I", "-L", "--silent", "--include",
+                 "--head", "--location", "--verbose"):
+            # Headers-only mode for ``-I``/``--head`` -> issue HEAD instead.
+            if t in ("-I", "--head"):
+                method = "HEAD"
+            i += 1; continue
+        if t.startswith("-"):
+            # Unknown flag; skip its arg if it looks like a value.
+            if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+                i += 2; continue
+            i += 1; continue
+        if url is None:
+            url = t
+        i += 1
+    if not url:
+        return None
+    # Reduce URL to a path: strip scheme + host, keep path + query.
+    path = "/"
+    m = _re.match(r"^[a-zA-Z]+://[^/]+(/.*)?$", url)
+    if m:
+        path = m.group(1) or "/"
+    elif url.startswith("/"):
+        path = url
+    else:
+        # Bare host with no path; default to /.
+        path = "/"
+    return {"method": method, "path": path, "headers": headers, "data": data}
+
+
+def probe_code_blocks_for_flag(
+    runner: "HttpTargetRunner",
+    code_blocks: list[str],
+    *,
+    max_probes: int = 6,
+) -> tuple[str, str, float] | None:
+    """Run cURL examples from the section's theory, looking for HTB flags.
+
+    Mirrors the operator's stated mental model: a human reads the theory,
+    sees ``curl -X POST /api/...``, copies the command, runs it against
+    the spawned target, and reports whatever HTB flag the response
+    contains. The model does the same: any cURL we can parse from the
+    section's code blocks is re-hosted against the live target's IP, and
+    if the response body has an ``HTB{...}`` token we surface it as a
+    high-confidence answer.
+
+    Capped at ``max_probes`` HTTP requests so we don't spray when a
+    section dumps a huge list of examples.
+    """
+    cmds = extract_curl_commands(code_blocks)
+    if not cmds:
+        return None
+    seen_paths: set[tuple[str, str]] = set()
+    for cmd in cmds[:max_probes]:
+        key = (cmd["method"], cmd["path"])
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        resp = runner.request(
+            cmd["path"],
+            method=cmd["method"],
+            headers=cmd["headers"] or None,
+            data=cmd.get("data"),
+        )
+        m = _re.search(r"HTB\{[^}]+\}", resp.body_text)
+        if m:
+            return (
+                m.group(0),
+                f"{cmd['method']} {cmd['path']} -> body had {m.group(0)!r}",
+                0.95,
+            )
+    return None
 
 
 # ---- top-level probe orchestrator ------------------------------------------

@@ -62,7 +62,11 @@ from htbrl.academy.cdp_walker import (
     submit_answer_in_dom,
 )
 from htbrl.academy.curriculum import check_unlock_gate
-from htbrl.academy.target_runner import HttpTargetRunner, probe_target_for_answer
+from htbrl.academy.target_runner import (
+    HttpTargetRunner,
+    probe_code_blocks_for_flag,
+    probe_target_for_answer,
+)
 from htbrl.academy.page_models import (
     AcademyAnswer,
     AcademyModule,
@@ -359,15 +363,31 @@ def main(argv: list[str] | None = None) -> int:
                 # comes from a real HTTP probe we want it ranked above the
                 # heuristic candidates (which are pattern-matching theory
                 # text). Real cURL output beats keyword-matching every time.
+                #
+                # Two probe paths, in order of preference:
+                #   1. Question-pattern dispatcher (probe_target_for_answer)
+                #      -- handles "version of X", "header value", "JSON
+                #      field", "download flag from /path".
+                #   2. Theory-driven probe (probe_code_blocks_for_flag) --
+                #      mimics how a human learns: read the section's cURL
+                #      examples, run them against the spawned target, and
+                #      surface any HTB flag the response contains. This is
+                #      the "theory then practice" loop.
                 if target_runner is not None:
                     probe = probe_target_for_answer(
                         target_runner, question.prompt,
                         section_code_blocks=section.code_blocks,
                     )
+                    probe_label = "TARGET-PROBE"
+                    if probe is None:
+                        probe = probe_code_blocks_for_flag(
+                            target_runner, section.code_blocks,
+                        )
+                        probe_label = "CODE-BLOCK-PROBE"
                     if probe is not None:
                         ans_text, rationale, conf = probe
-                        print(f"[wizard]   q={question.id!r} TARGET-PROBE conf={conf:.2f} "
-                              f"ans={ans_text!r}")
+                        print(f"[wizard]   q={question.id!r} {probe_label} "
+                              f"conf={conf:.2f} ans={ans_text!r}")
                         candidates.insert(0, AcademyAnswer(
                             question_id=question.id, answer_text=ans_text,
                             confidence=conf, method="target_probe",
@@ -497,6 +517,27 @@ def main(argv: list[str] | None = None) -> int:
                     method=_method_tag(action),
                     rationale=f"operator {action}; submit_state={state}",
                 ), accepted))
+
+            # Per-section bookkeeping: how many of THIS section's questions
+            # ended up accepted? Includes both fresh accepts and the
+            # already-answered short-circuit. We use this to decide whether
+            # to stop the spawned target before moving on (operator's rule
+            # "make close target after answering successfully questions").
+            section_qids = {q.id for q in section.questions}
+            section_subs = [s for s in submissions if s[1].question_id in section_qids]
+            n_section_q = len(section.questions)
+            n_section_accepted = sum(1 for _, _, ok in section_subs if ok)
+            full_section_success = (
+                n_section_q > 0 and n_section_accepted == n_section_q
+            )
+            if full_section_success and target_runner is not None:
+                ok, detail = stop_target(cdp)
+                print(f"[wizard]   all {n_section_q} question(s) accepted; "
+                      f"stop_target ok={ok} detail={detail}")
+            elif n_section_q > 0 and target_runner is not None:
+                print(f"[wizard]   section partial: "
+                      f"{n_section_accepted}/{n_section_q} accepted; "
+                      f"leaving target running for follow-up")
 
             # advance to next section
             if section.section_total and section.section_index >= section.section_total:
