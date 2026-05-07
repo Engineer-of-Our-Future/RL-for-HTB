@@ -1,0 +1,27 @@
+# HTB Academy auto-learner config (Phase 5b).
+#
+# WARNING: auto-submitting answers to academy modules to farm cubes is a
+# gray-zone use of an educational platform. The default `study_only=true`
+# reads content + practices in the sandbox without submitting anything.
+# Set `study_only=false` ONLY on a research account; see README.
+
+# @package _group_
+
+# Mode
+study_only: true                       # default: read + sandbox only, no answer submission
+submit_confidence_threshold: 0.7       # only submit when answerer confidence >= this
+manual_review_threshold: 0.3           # below this, queue for human review
+
+# Per-run caps (defense in depth)
+max_modules_per_run: 1
+max_questions_per_module: 200
+
+# Output
+auto_demo_dir: data/auto_demos
+compress_demos: true
+
+# Curriculum
+preferred_module_order: []             # list of module ids to attempt first
+
+# Transport
+transport: mock                        # mock | playwright

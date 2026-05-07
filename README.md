@@ -27,7 +27,22 @@ If you run on different hardware, expect to revisit the model size, batch size, 
 ```
 
 ## Status
-**Phases 0–6 + 8/11 prep + Phase 4 real env land.** Tool registry covers all 14 Enterprise tactics (73 tools) + 7 ICS dual-tagged. Full PPO loop runs end-to-end against the stub env; real `HTBEnv` works against a WSL Kali attacker. 238 tests passing.
+**Phases 0–9 + 11 + 5b auto-learner.** Tool registry covers all 14 Enterprise tactics (73 tools) + 7 ICS dual-tagged. Full PPO loop runs end-to-end against the stub env; real `HTBEnv` works against a WSL Kali attacker. HTB Academy auto-learner with study-only / auto-submit modes ships under `htbrl.academy`. **292 tests passing.**
+
+## HTB Academy auto-learner (Phase 5b)
+A separate progression path that reads HTB Academy modules, optionally drives the per-module SSH sandbox to derive answers, and writes every interaction to the same `Demonstration` format the BC trainer reads. Two modes:
+
+- **`study_only` (default).** Reads modules + practices in the sandbox, **never POSTs an answer**. Use this for safe data collection.
+- **`auto_submit`.** Actually submits answers to the academy. Requires `--enable-auto-submit --i-accept-academy-tos-risk`. **Auto-completing academy modules to farm cubes/XP is a gray-zone use of an educational platform and may violate HTB's Terms of Service. Use only on a research account you accept might be banned.** I do not recommend this mode.
+
+The transport layer is abstract (`AcademySession` ABC). The bundled `MockAcademySession` lets you exercise the full pipeline end-to-end without touching the real site:
+
+```powershell
+python scripts\htb_academy.py --transport mock --max-modules 1
+# writes data\auto_demos\academy_m1.msgpack.gz which BC training can mix in
+```
+
+A real Playwright-based `PlaywrightAcademySession` is intentionally NOT included by default — implementing it pulls in browser binaries, and the sober choice is to leave it as a user-supplied extension.
 
 ## Quick install (Windows host)
 ```powershell

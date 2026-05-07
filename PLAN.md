@@ -334,6 +334,49 @@ Round-trip on 10 k random shell-output samples: `decode(encode(x)) == x` byte-pe
 
 ---
 
+## Phase 5b — HTB Academy auto-learner (cross-cutting; Weeks 6–8 in parallel)
+
+**Goal:** Automatically work through HTB Academy modules in tier order — read the module, run the per-section sandbox, attempt the questions — and emit `Demonstration` files that BC training (Phase 5) can mix in alongside human-collected demos. **The agent does the academy's curriculum first; only after academy progression does it move to lab boxes.** This was added by user request mid-project to give the agent a structured curriculum + a passive data source.
+
+### Architecture
+- `htbrl.academy.session.AcademySession` is the abstract transport. `MockAcademySession` ships in-tree for tests + dry-runs; a real `PlaywrightAcademySession` is intentionally NOT bundled (browser binaries are heavy, and the responsible thing is to leave the network-touching code as a user-supplied extension).
+- `htbrl.academy.answerer.HeuristicAnswerer` answers each question via:
+  - **MC**: Jaccard overlap between option tokens and section body.
+  - **TEXT**: scan the body for sentences whose tokens overlap the prompt; extract the most "answer-shaped" tail or a quoted/back-ticked span.
+  - **FLAG**: pick the section's most flag-likely command, run it through `SandboxRunner` (an `SSHSession` adapter for the academy sandbox), and regex for `HTB{...}` or a single-token line.
+- Below `manual_review_threshold` (default 0.3) the orchestrator pauses and records a `ManualReviewItem` for human resolution rather than guessing.
+- Every run writes one `Demonstration` per module to `data/auto_demos/`. The synthetic tool name `academy_answer` (and `academy_sandbox_cmd` when a flag was derived from a sandbox command) keeps these turns clearly distinguishable from real-env demos in the BC trainer.
+
+### Modes
+| Mode | Behavior | Default? |
+| ---- | -------- | -------- |
+| `study_only` | Read content, run sandbox, log demos. **No POSTs.** | ✅ Yes |
+| `auto_submit` | Actually submits answers when confidence ≥ threshold. | ❌ Opt-in: `--enable-auto-submit --i-accept-academy-tos-risk` |
+
+**ToS warning.** Auto-submitting on someone's HTB Academy account to farm cubes/XP is a gray-zone use of an educational platform and may violate HTB's Terms of Service. The default is `study_only`. The submit path exists for users who explicitly accept the risk on a research account.
+
+### Critical files
+- `src/htbrl/academy/page_models.py` — dataclasses (`AcademyModule`, `AcademySection`, `AcademyQuestion`, `AcademyAnswer`, `AcademySandbox`, `ProgressState`, `QuestionType`).
+- `src/htbrl/academy/session.py` — `AcademySession` ABC + `MockAcademySession` + redacted `AcademyCredentials`.
+- `src/htbrl/academy/answerer.py` — `HeuristicAnswerer`.
+- `src/htbrl/academy/sandbox.py` — `SandboxRunner` (adapts `SSHSession`).
+- `src/htbrl/academy/curriculum.py` — `next_module` (tier + cubes ordering, prereq enforcement).
+- `src/htbrl/academy/orchestrator.py` — `AutoLearner` main loop with `OrchestratorConfig`.
+- `src/htbrl/academy/auto_demo_writer.py` — academy session log → `Demonstration`.
+- `scripts/htb_academy.py` — CLI.
+- `configs/academy/academy_default.yaml` — Hydra config.
+
+### Progression rule (this is the user's directive)
+1. **Modules first.** The agent works through the academy curriculum before any lab box.
+2. **Cubes track unlock.** After each completed module, the orchestrator refreshes `ProgressState`, sees the new cubes balance, and `next_module` returns the next eligible module.
+3. **Labs after academy.** Only once the curriculum is exhausted does the orchestrator pivot to real `HTBEnv` rollouts (Phase 4). This phase boundary lives in the top-level training script — Phase 5b owns the academy half.
+
+### Verification
+- `pytest tests/academy/`: 27 tests covering the dataclasses, mock session lifecycle, answerer for each question type, curriculum eligibility & ordering, orchestrator end-to-end on a fixture (study-only writes a demo without mutating state; auto-submit completes a module and updates cubes), and auto-demo-writer turn shape.
+- `python scripts/htb_academy.py --transport mock --max-modules 1` runs end-to-end against the bundled fixture and writes `data/auto_demos/academy_m1.msgpack.gz`.
+
+---
+
 ## Phase 6 — PPO trainer + cold-start exploration (Weeks 8–9)
 
 **Goal:** RL fine-tuning that retains exploration ("cold-start spirit" you asked for) while not destroying the BC prior.
