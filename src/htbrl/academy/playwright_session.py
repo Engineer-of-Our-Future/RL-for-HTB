@@ -37,11 +37,22 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+# Pin Playwright's browser cache to a project-local path so it's independent of
+# the shell's %LOCALAPPDATA% (matters when running under elevated PowerShell on
+# Windows, where some configurations resolve LOCALAPPDATA to a different profile
+# than where chromium was installed). Must be set BEFORE the first
+# `playwright.sync_api` import inside this process.
+_PROJECT_BROWSERS = Path(__file__).resolve().parents[3] / ".local" / "playwright-browsers"
+if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ and _PROJECT_BROWSERS.exists():
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_PROJECT_BROWSERS)
 
 from htbrl.academy.page_models import (
     AcademyAnswer,
@@ -63,14 +74,24 @@ _DEFAULT_BASE_URL = "https://academy.hackthebox.com"
 
 # Selectors are keyed by stable names; the file at ``selectors_path`` provides
 # the actual CSS/XPath/role selectors so we can update them out-of-band.
+#
+# The login selectors below were captured against the real
+# https://account.hackthebox.com/login DOM (HTB unified SSO, Vuetify-based).
+# They will drift over time - update the YAML override when they do.
+_DEFAULT_SSO_LOGIN_URL = "https://account.hackthebox.com/login"
 _DEFAULT_SELECTORS = {
     "login": {
-        "url": f"{_DEFAULT_BASE_URL}/login",
-        "email": "input[name='email']",
-        "password": "input[name='password']",
-        "submit": "button[type='submit']",
-        "logged_in_marker": "[data-test='user-menu'], .user-avatar",
-        "captcha_marker": ".g-recaptcha, [data-test='captcha']",
+        "url": _DEFAULT_SSO_LOGIN_URL,
+        "email": "#loginEmail, input[name='email'][type='email']",
+        "password": "#loginPassword, input[name='password']",
+        "submit": "form#loginForm button[type='submit'], button:has-text('Sign in')",
+        # Vuetify renders the submit button with the 'disabled' attribute until
+        # the Cloudflare Turnstile challenge resolves. Wait for this CSS state
+        # before clicking. The probe + session use this implicitly.
+        "submit_enabled": "form#loginForm button[type='submit']:not([disabled])",
+        "logged_in_marker": "[data-test='user-menu'], .user-avatar, .htb-user-avatar",
+        # Cloudflare Turnstile container (invisible challenge that gates the form).
+        "captcha_marker": "#turnstile-login, .g-recaptcha, [data-test='captcha']",
     },
     "modules_list": {
         "url": f"{_DEFAULT_BASE_URL}/modules",
@@ -214,18 +235,39 @@ class PlaywrightAcademySession(AcademySession):
         log.info("logging in with credentials")
         page.goto(self._sel["login"]["url"])
 
-        # CAPTCHA / 2FA are out of scope.
-        if page.locator(self._sel["login"]["captcha_marker"]).count() > 0:
-            raise RuntimeError(
-                "CAPTCHA detected on the login page. Log in manually once via "
-                "an interactive Playwright session and save cookies, then re-run "
-                "with cookie_path set."
+        # HTB's login uses Cloudflare Turnstile (an invisible / minimal-friction
+        # challenge), which keeps the submit button disabled until the token
+        # resolves. We don't try to solve Turnstile programmatically (that
+        # would be both unreliable and a clear ToS violation); instead we
+        # require ``headless=False`` for the FIRST run, let the Turnstile
+        # token settle naturally, and then save cookies so subsequent runs
+        # skip the login flow entirely.
+        if self.cfg.headless:
+            log.warning(
+                "login attempted in headless mode; Cloudflare Turnstile will "
+                "almost certainly block the submit button. Run once with "
+                "PlaywrightConfig(headless=False) to seed cookies."
             )
 
-        page.locator(self._sel["login"]["email"]).fill(creds.username)
-        page.locator(self._sel["login"]["password"]).fill(creds.password)
-        page.locator(self._sel["login"]["submit"]).click()
-        page.wait_for_url(lambda u: "/login" not in u, timeout=self.cfg.nav_timeout_ms)
+        page.locator(self._sel["login"]["email"]).first.fill(creds.username)
+        page.locator(self._sel["login"]["password"]).first.fill(creds.password)
+        # Wait for Turnstile to resolve (submit button stops being disabled).
+        try:
+            page.wait_for_selector(
+                self._sel["login"]["submit_enabled"],
+                timeout=self.cfg.nav_timeout_ms,
+            )
+        except Exception:
+            log.warning(
+                "submit button never became enabled within timeout; the "
+                "Cloudflare Turnstile challenge may be blocking automation. "
+                "Try running headful and resolving any visible challenge."
+            )
+        page.locator(self._sel["login"]["submit"]).first.click()
+        page.wait_for_url(
+            lambda u: "/login" not in u and "account.hackthebox.com" not in u,
+            timeout=self.cfg.nav_timeout_ms,
+        )
 
         if not self._is_logged_in_dom():
             raise RuntimeError(
