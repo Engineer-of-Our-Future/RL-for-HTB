@@ -55,10 +55,14 @@ from htbrl.academy.cdp_walker import (
     open_cdp,
     parse_cheatsheet_markdown,
     read_cube_balance,
+    read_target_info,
     scrape_section,
+    spawn_target,
+    stop_target,
     submit_answer_in_dom,
 )
 from htbrl.academy.curriculum import check_unlock_gate
+from htbrl.academy.target_runner import HttpTargetRunner, probe_target_for_answer
 from htbrl.academy.page_models import (
     AcademyAnswer,
     AcademyModule,
@@ -204,6 +208,18 @@ def _build_argparser() -> argparse.ArgumentParser:
         "--skip-already-answered", action="store_true", default=True,
         help="skip questions HTB shows as already answered (default True)",
     )
+    p.add_argument(
+        "--auto-spawn-target", action="store_true", default=True,
+        help="auto-spawn the section's target VM (when present) and probe it "
+             "for question answers. Default ON: many academy questions cannot "
+             "be answered from theory text alone - they require executing "
+             "cURL/HTTP against the spawned target.",
+    )
+    p.add_argument(
+        "--target-spawn-timeout-s", type=float, default=120.0,
+        help="seconds to wait for the academy to provision the target IP "
+             "after clicking Spawn (default 120).",
+    )
     return p
 
 
@@ -299,6 +315,31 @@ def main(argv: list[str] | None = None) -> int:
                 f"questions={len(section.questions)}"
             )
 
+            # Spawn target if this section needs one and we're allowed to.
+            target_runner: HttpTargetRunner | None = None
+            if section.questions and args.auto_spawn_target:
+                target_info = read_target_info(cdp)
+                if target_info is None:
+                    # Panel exists but no IP -> click Spawn.
+                    info = read_target_info(cdp)
+                    if info is None:
+                        ok, info_or_err = spawn_target(
+                            cdp, timeout_s=args.target_spawn_timeout_s,
+                        )
+                        if ok:
+                            target_info = info_or_err  # type: ignore[assignment]
+                            print(f"[wizard]   target spawned: {target_info.host_port} "
+                                  f"(TTL {target_info.ttl_minutes} min)")
+                        else:
+                            print(f"[wizard]   no target on this section: {info_or_err}")
+                else:
+                    print(f"[wizard]   target already running: "
+                          f"{target_info.host_port}")
+                if target_info is not None:
+                    target_runner = HttpTargetRunner(
+                        host=target_info.ip, port=target_info.port,
+                    )
+
             for q_idx, question in enumerate(section.questions):
                 already = q_idx < len(answered_flags) and answered_flags[q_idx]
                 if already and args.skip_already_answered:
@@ -314,6 +355,24 @@ def main(argv: list[str] | None = None) -> int:
                     question, section, top_n=args.top_n,
                     module=module,
                 )
+                # Probe the live target FIRST: if a high-confidence answer
+                # comes from a real HTTP probe we want it ranked above the
+                # heuristic candidates (which are pattern-matching theory
+                # text). Real cURL output beats keyword-matching every time.
+                if target_runner is not None:
+                    probe = probe_target_for_answer(
+                        target_runner, question.prompt,
+                        section_code_blocks=section.code_blocks,
+                    )
+                    if probe is not None:
+                        ans_text, rationale, conf = probe
+                        print(f"[wizard]   q={question.id!r} TARGET-PROBE conf={conf:.2f} "
+                              f"ans={ans_text!r}")
+                        candidates.insert(0, AcademyAnswer(
+                            question_id=question.id, answer_text=ans_text,
+                            confidence=conf, method="target_probe",
+                            rationale=rationale,
+                        ))
                 top = candidates[0] if candidates else None
                 lab_flag = is_lab_flag_question(question)
                 # -- decide path -----------------------------------------------------

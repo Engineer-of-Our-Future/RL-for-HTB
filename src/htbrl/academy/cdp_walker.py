@@ -576,6 +576,172 @@ def read_cube_balance(cdp: CDPClient) -> int | None:
         return None
 
 
+_TARGET_PANEL_JS = r"""
+(function(){
+    // Walk DOM for an element whose direct text is exactly 'Target(s)'.
+    // The academy renders this above a card that, when running, shows
+    // BOTH a "Time left: N min(s)" timer in the header AND an IP:PORT
+    // body row beneath it. The header and body are sibling divs inside
+    // a wrapper card, so we have to walk up far enough that both are
+    // covered. ``textContent`` (not innerText - that hides spacing
+    // descendants of monospace lines) is what surfaces the IP.
+    const all = Array.from(document.querySelectorAll('*'));
+    const labels = all.filter(el => {
+        const child = Array.from(el.childNodes).find(n => n.nodeType === 3);
+        return child && child.textContent.trim() === 'Target(s)';
+    });
+    if (!labels.length) return {present: false};
+    let panel = labels[0];
+    // Walk up until we see either (a) the IP under the timer (running),
+    // or (b) the Spawn button (not running). Cap at 18 levels so we
+    // don't end up at <html>.
+    for (let i = 0; i < 18; i++) {
+        if (!panel.parentElement) break;
+        panel = panel.parentElement;
+        const tc = panel.textContent || '';
+        const hasIP = /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(tc);
+        const hasSpawn = /Spawn\s+the\s+target|Click\s+Here\s+to\s+Spawn|Spawn\s+Target/i.test(tc);
+        const hasTimer = /Time\s+left/i.test(tc);
+        // Running target: walk up until BOTH timer + IP are visible.
+        if (hasTimer && hasIP) break;
+        // Not-running: walk up until we see the spawn button.
+        if (hasSpawn) break;
+    }
+    const text = (panel.textContent || '').slice(0, 1500);
+    const ipPortMatch = text.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::(\d{1,5}))?/);
+    const timerMatch = text.match(/Time\s+left:?\s*(\d+)\s*min/i);
+    const buttons = Array.from(panel.querySelectorAll('button')).map(b => ({
+        text: ((b.innerText||b.textContent)||'').trim(),
+        disabled: b.disabled,
+    }));
+    return {
+        present: true,
+        text,
+        ip: ipPortMatch ? ipPortMatch[1] : null,
+        port: ipPortMatch && ipPortMatch[2] ? parseInt(ipPortMatch[2], 10) : null,
+        ttl_minutes: timerMatch ? parseInt(timerMatch[1], 10) : null,
+        buttons,
+        // Convenience: is a target currently running?
+        running: !!ipPortMatch,
+    };
+})()
+"""
+
+
+_SPAWN_TARGET_BTN_JS = r"""
+(function(){
+    // Match "Spawn the target system", "Click Here to Spawn Target",
+    // "Spawn Target", or just "Start Target" - all observed variants
+    // across academy modules.
+    const btns = Array.from(document.querySelectorAll('button'));
+    const cand = btns.find(b => {
+        const t = ((b.innerText||b.textContent)||'').trim();
+        return /^(Spawn\s+the\s+target(\s+system)?|Click\s+Here\s+to\s+Spawn(\s+Target)?|Spawn\s+Target|Start\s+Target)$/i.test(t);
+    });
+    if (!cand) return {clicked: false, why: 'no spawn button'};
+    if (cand.disabled) return {clicked: false, why: 'spawn button disabled'};
+    cand.click();
+    return {clicked: true, text: ((cand.innerText||cand.textContent)||'').trim()};
+})()
+"""
+
+
+_STOP_TARGET_BTN_JS = r"""
+(function(){
+    // Either a "Stop the target system" button or the red X icon-button
+    // in the running-target panel. We match by aria-label / title /
+    // visible text - whichever the academy currently uses.
+    const btns = Array.from(document.querySelectorAll('button'));
+    const cand = btns.find(b => {
+        const t = ((b.innerText||b.textContent)||'').trim();
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        const title = (b.getAttribute('title') || '').toLowerCase();
+        return /^(Stop\s+the\s+target|Stop\s+Target|Stop\s+Machine)$/i.test(t)
+            || aria.includes('stop target')
+            || title.includes('stop target');
+    });
+    if (!cand) return {clicked: false, why: 'no stop button'};
+    if (cand.disabled) return {clicked: false, why: 'stop button disabled'};
+    cand.click();
+    return {clicked: true, text: ((cand.innerText||cand.textContent)||'').trim()};
+})()
+"""
+
+
+@dataclass
+class TargetInfo:
+    """A spawned academy target's connection info."""
+
+    ip: str
+    port: int | None
+    ttl_minutes: int | None = None
+    panel_text: str = ""
+
+    @property
+    def host_port(self) -> str:
+        return f"{self.ip}:{self.port}" if self.port else self.ip
+
+
+def read_target_info(cdp: CDPClient) -> TargetInfo | None:
+    """Return the spawned target's IP:PORT + TTL, or None if not running.
+
+    Treats "panel exists but no IP" as not-running (the spawn button is
+    showing instead). Use ``spawn_target`` to start one.
+    """
+    res = cdp.evaluate(_TARGET_PANEL_JS) or {}
+    if not res.get("present") or not res.get("running"):
+        return None
+    ip = res.get("ip")
+    if not ip:
+        return None
+    return TargetInfo(
+        ip=ip,
+        port=res.get("port"),
+        ttl_minutes=res.get("ttl_minutes"),
+        panel_text=str(res.get("text", ""))[:500],
+    )
+
+
+def spawn_target(cdp: CDPClient, *, timeout_s: float = 90.0) -> tuple[bool, TargetInfo | str]:
+    """Click the section's "Spawn the target system" button + wait for IP.
+
+    Returns ``(ok, target)`` where ``target`` is a :class:`TargetInfo` on
+    success or a diagnostic string on failure. Polls the target panel
+    until an IP:PORT appears (academy targets typically take 20-60s to
+    boot). Skips the click if a target is already running on this section.
+    """
+    # Already running? Use it.
+    existing = read_target_info(cdp)
+    if existing is not None:
+        return True, existing
+    res = cdp.evaluate(_SPAWN_TARGET_BTN_JS) or {}
+    if not res.get("clicked"):
+        return False, str(res.get("why") or "unknown")
+    # Poll the panel for an IP:PORT.
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(2.0)
+        info = read_target_info(cdp)
+        if info is not None:
+            return True, info
+    return False, f"clicked spawn but no IP appeared in {timeout_s:.0f}s"
+
+
+def stop_target(cdp: CDPClient) -> tuple[bool, str]:
+    """Click "Stop the target system" if a target is currently running.
+
+    Best-effort: returns ``(False, "no running target")`` when nothing's
+    spawned. Doesn't poll - the academy clears the panel ~immediately on
+    click and the next ``read_target_info`` will see None.
+    """
+    if read_target_info(cdp) is None:
+        return False, "no running target"
+    res = cdp.evaluate(_STOP_TARGET_BTN_JS) or {}
+    if not res.get("clicked"):
+        return False, str(res.get("why") or "unknown")
+    return True, str(res.get("text") or "stopped")
+
+
 _UNLOCK_BUTTON_JS = r"""
 (function(){
     // The "Unlock Module - N Cubes" button on the module landing page.
@@ -800,6 +966,7 @@ def submit_answer_in_dom(
 __all__ = [
     "CDPClient",
     "SECTION_SCRAPER_JS",
+    "TargetInfo",
     "already_answered_flags",
     "build_section_from_scrape",
     "click_next",
@@ -813,7 +980,10 @@ __all__ = [
     "parse_cheatsheet_markdown",
     "pick_academy_tab",
     "read_cube_balance",
+    "read_target_info",
     "scrape_section",
+    "spawn_target",
+    "stop_target",
     "submit_answer_in_dom",
     "unlock_module",
 ]
