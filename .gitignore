@@ -32,6 +32,7 @@ logs/
 data/raw/
 data/cache/
 data/demos/
+data/auto_demos/
 .cache/
 *.tfevents*
 *.ckpt
