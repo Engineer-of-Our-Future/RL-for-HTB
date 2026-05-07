@@ -619,3 +619,182 @@ def test_session_to_demonstration_includes_sandbox_turn():
     tool_names = [t.action_tool_name for t in demo.turns]
     assert "academy_sandbox_cmd" in tool_names
     assert "academy_answer" in tool_names
+
+
+# ---- propose() ranked-candidate API ----------------------------------------
+
+
+def test_propose_returns_ranked_list_with_unique_answers():
+    """propose() must dedupe by answer_text and rank by confidence desc."""
+    section = AcademySection(
+        id="s", title="ls",
+        body_text="The ls command lists files in a directory. It is a built-in.",
+        inline_code=["ls"],
+    )
+    q = AcademyQuestion(
+        id="q", prompt="Which command lists files?", type=QuestionType.TEXT,
+    )
+    cands = HeuristicAnswerer().propose(q, section, top_n=5)
+    # All confidence values are descending
+    confs = [c.confidence for c in cands]
+    assert confs == sorted(confs, reverse=True)
+    # Answers are unique (case-insensitive)
+    texts = [c.answer_text.strip().lower() for c in cands]
+    assert len(set(texts)) == len(texts)
+    # The top candidate uses the inline-code span
+    assert cands[0].answer_text == "ls"
+
+
+def test_propose_acronym_beats_inline_code():
+    """When an acronym expansion exists, it must rank above inline-code spans."""
+    section = AcademySection(
+        id="s", title="PAM",
+        body_text="Linux PAM (Pluggable Authentication Modules) lets us add modules.",
+        inline_code=["pam.so"],
+    )
+    q = AcademyQuestion(
+        id="q", prompt="What does the acronym Linux PAM stand for?",
+        type=QuestionType.TEXT,
+    )
+    cands = HeuristicAnswerer().propose(q, section, top_n=3)
+    assert cands
+    assert cands[0].answer_text == "Pluggable Authentication Modules"
+    assert cands[0].method == "acronym_expansion"
+
+
+def test_propose_path_question_extracts_path():
+    section = AcademySection(
+        id="s", title="passwd",
+        body_text="The user database is stored in /etc/passwd which holds account info.",
+    )
+    q = AcademyQuestion(
+        id="q", prompt="What is the path to the user database file?",
+        type=QuestionType.TEXT,
+    )
+    cands = HeuristicAnswerer().propose(q, section)
+    assert any(c.answer_text == "/etc/passwd" for c in cands)
+    # The path should be among the higher-ranked candidates (top 3 at worst)
+    top3 = cands[:3]
+    assert any(c.answer_text == "/etc/passwd" for c in top3)
+
+
+def test_propose_port_question_extracts_port():
+    section = AcademySection(
+        id="s", title="ssh",
+        body_text="OpenSSH listens on TCP port 22 by default. Connections are encrypted.",
+    )
+    q = AcademyQuestion(
+        id="q", prompt="On which TCP port does OpenSSH listen?",
+        type=QuestionType.TEXT,
+    )
+    cands = HeuristicAnswerer().propose(q, section)
+    assert any(c.answer_text == "22" for c in cands)
+
+
+def test_propose_mc_returns_all_options_ranked():
+    section = AcademySection(
+        id="s", title="basics",
+        body_text="The ls command lists files in a directory.",
+    )
+    q = AcademyQuestion(
+        id="q", prompt="Which command lists files?",
+        type=QuestionType.MULTIPLE_CHOICE,
+        multiple_choice_options=["ls", "pwd", "cat"],
+    )
+    cands = HeuristicAnswerer().propose(q, section)
+    assert len(cands) == 3
+    # 'ls' should be the top because it appears in the body
+    assert cands[0].answer_text == "ls"
+    # All candidates use the mc_match method tag
+    assert all(c.method == "mc_match" for c in cands)
+
+
+def test_propose_skipped_when_nothing_to_lean_on():
+    section = AcademySection(id="s", title="x", body_text="")
+    q = AcademyQuestion(
+        id="q", prompt="What is the meaning of life?",
+        type=QuestionType.TEXT,
+    )
+    cands = HeuristicAnswerer().propose(q, section, top_n=3)
+    # Either an empty list, or a single skipped marker
+    assert all(c.answer_text == "" or c.confidence < 0.5 for c in cands)
+
+
+def test_propose_inline_code_ranked_uses_command_hint():
+    """When the prompt includes a 'command'/'flag'/'option' hint, inline-code
+    spans whose surrounding sentence overlaps the prompt should outrank ones
+    that don't."""
+    section = AcademySection(
+        id="s", title="grep",
+        body_text=(
+            "The grep command searches for patterns. The -i option makes the "
+            "search case-insensitive. The cat command concatenates files."
+        ),
+        inline_code=["grep", "-i", "cat"],
+    )
+    q = AcademyQuestion(
+        id="q", prompt="Which option makes the search case-insensitive?",
+        type=QuestionType.TEXT,
+    )
+    cands = HeuristicAnswerer().propose(q, section, top_n=3)
+    # '-i' appears in the case-insensitive sentence so should be at the top
+    assert cands[0].answer_text == "-i"
+
+
+# ---- wizard safety: lab-flag detection -------------------------------------
+
+
+def test_lab_flag_detection_by_question_type():
+    from htbrl.academy.cdp_walker import is_lab_flag_question
+    q = AcademyQuestion(id="q", prompt="give me the flag",
+                        type=QuestionType.FLAG)
+    assert is_lab_flag_question(q) is True
+
+
+def test_lab_flag_detection_by_prompt_keywords():
+    """Even TEXT-typed questions whose prompt mentions a lab flag must be
+    treated as auto-submit-unsafe."""
+    from htbrl.academy.cdp_walker import is_lab_flag_question
+    flag_phrases = [
+        "Submit the flag from /root/flag.txt",
+        "What is the flag value shown on the box?",
+        "Find the flag in HTB{...} format",
+        "What's the user flag?",
+        "What's the root flag?",
+    ]
+    for prompt in flag_phrases:
+        q = AcademyQuestion(id="q", prompt=prompt, type=QuestionType.TEXT)
+        assert is_lab_flag_question(q) is True, f"failed to flag-detect: {prompt!r}"
+
+
+def test_lab_flag_detection_negative_for_theory_question():
+    """Plain theory questions must NOT trigger the lab-flag guard, otherwise
+    the wizard could never auto-submit them."""
+    from htbrl.academy.cdp_walker import is_lab_flag_question
+    theory_prompts = [
+        "What does the acronym PAM stand for?",
+        "Which command lists files in a directory?",
+        "How many ports does the example show as open?",
+        "What is the path to the user database?",
+        "On which TCP port does OpenSSH listen by default?",
+    ]
+    for prompt in theory_prompts:
+        q = AcademyQuestion(id="q", prompt=prompt, type=QuestionType.TEXT)
+        assert is_lab_flag_question(q) is False, f"false-positive on theory: {prompt!r}"
+
+
+def test_answer_uses_top_propose_candidate():
+    """Legacy single-best ``answer()`` is just ``propose()[0]``."""
+    section = AcademySection(
+        id="s", title="ssh",
+        body_text="OpenSSH listens on TCP port 22 by default.",
+    )
+    q = AcademyQuestion(
+        id="q", prompt="On which TCP port does OpenSSH listen?",
+        type=QuestionType.TEXT,
+    )
+    a = HeuristicAnswerer()
+    top = a.propose(q, section)[0]
+    legacy = a.answer(q, section)
+    assert top.answer_text == legacy.answer_text
+    assert top.method == legacy.method
