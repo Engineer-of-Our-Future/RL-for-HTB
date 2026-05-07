@@ -1,0 +1,15 @@
+# Small policy config for debugging / fast iteration on CPU.
+# About 3 M params, fits anywhere.
+
+# @package _group_
+
+vocab_size: 8192
+n_tools: 100
+n_matrices: 3
+d_model: 128
+n_layers: 4
+n_heads: 4
+d_ff: 384
+max_seq_len: 256
+dropout: 0.0
+slot_vocab_sizes: []

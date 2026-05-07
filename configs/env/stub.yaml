@@ -1,0 +1,9 @@
+# Stub env - synthetic, no Kali required. Used for trainer-loop validation.
+
+# @package _group_
+
+type: stub
+matrix: enterprise
+max_steps: 20
+n_envs: 4
+seed_per_env: [0, 1, 2, 3]

@@ -1,0 +1,38 @@
+# Fast smoke-config for CI / dev. Tiny rollout, few epochs, verifies the
+# trainer composes without burning compute.
+
+# @package _group_
+
+lr: 1.0e-3
+weight_decay: 0.0
+betas: [0.9, 0.999]
+eps: 1.0e-8
+fused: false
+
+clip_range: 0.2
+value_clip_range: 0.2
+value_coef: 0.5
+entropy_coef: 0.0
+n_epochs: 1
+minibatch_size: 4
+max_grad_norm: 0.5
+target_kl_for_early_stop: null
+normalize_advantages: false
+
+gamma: 0.99
+lam: 0.95
+
+n_steps: 8
+n_envs: 2
+
+rnd:
+  enabled: false
+
+kl_ctrl:
+  enabled: false
+
+total_env_steps: 64
+
+bf16_forward: false
+fp32_master_weights: true
+gradient_checkpointing: false

@@ -1,0 +1,79 @@
+# Impact (TA0040): destructive or disruptive actions. We deliberately model
+# only the SAFE / observable impact actions an offensive-pentest agent would
+# legitimately take during scope-bounded engagements: stopping a service,
+# removing a temp file. We do NOT model encryption / wiping / DoS - those are
+# out of scope for this project (see PLAN.md "Out-of-scope").
+
+tools:
+  - name: stop_remote_service
+    category: post-exploit
+    description: Stop a systemd service on the target (revertible).
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'sudo -n systemctl stop {service} && sudo -n systemctl is-active {service}'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user with NOPASSWD sudo }
+      - { name: password, type: free_string, description: SSH password }
+      - name: service
+        type: enum
+        description: which service to stop (allowlisted; agent cannot stop arbitrary services)
+        values: [apache2, nginx, ssh, postgresql, mysql, redis, mongod, docker]
+        default: apache2
+    runtime_cap_seconds: 30
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0040]
+      techniques: [T1489]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      service: apache2
+    example_output: |
+      inactive
+
+  - name: clean_logs_proof_of_concept
+    category: post-exploit
+    description: Append a marker line to /var/log/auth.log demonstrating write access (no actual log destruction).
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'sudo -n bash -c \"echo {marker} >> /var/log/auth.log\" && sudo -n tail -n 1 /var/log/auth.log'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user with NOPASSWD sudo }
+      - { name: password, type: free_string, description: SSH password }
+      - { name: marker, type: free_string, description: benign marker string proving write access }
+    runtime_cap_seconds: 15
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0040, TA0005]
+      techniques: [T1070.002]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      marker: htbrl-test-marker-do-not-touch
+    example_output: |
+      htbrl-test-marker-do-not-touch
+
+  - name: simulate_resource_consumption
+    category: post-exploit
+    description: Stress test a target with a self-limiting CPU spike (10s).
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'timeout 10 stress-ng --cpu 1 --cpu-load 90 2>&1 | tail -1'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+    runtime_cap_seconds: 30
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0040]
+      techniques: [T1499.001]
+    example_invocation: { ip: 10.10.10.5, port: 22, user: bob, password: hunter2 }
+    example_output: |
+      stress-ng: info:  [12345] successful run completed in 10.00s

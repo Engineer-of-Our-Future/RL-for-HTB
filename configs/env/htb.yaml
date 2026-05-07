@@ -1,0 +1,48 @@
+# HTB / generic SSH-into-Kali env. Used in Phase 4+.
+# Concrete env class lives at src/htbrl/env/htb_env.py (TBD - Phase 4).
+
+# @package _group_
+
+type: htb
+matrix: enterprise
+n_envs: 8
+
+# SSH session into Kali attacker
+kali_ssh:
+  host: 127.0.0.1
+  port: 2222
+  user: kali
+  # Use the system SSH agent or a key file; never plaintext password here.
+  identity_file: ~/.ssh/id_ed25519
+  connect_timeout_seconds: 10
+
+# Targets the agent is allowed to scan / exploit. Outside this CIDR the env
+# refuses to render any command. Replace with your HTB tun0 subnet or a
+# dedicated lab subnet before training.
+target_allowlist_cidr:
+  - 10.10.10.0/24
+  - 10.10.11.0/24
+
+# Episode budget
+max_steps: 60
+wallclock_cap_seconds: 1800
+reset_strategy: rotate_box     # one of: rotate_box, snapshot_revert, none
+
+# Reward shaping primitives
+rewards:
+  per_command_penalty: -0.01
+  timeout_penalty: -0.1
+  reset_penalty: -0.5
+  new_port: 0.1
+  new_service_version: 0.2
+  user_shell: 0.5
+  user_flag: 1.0
+  root_shell: 1.5
+  root_flag: 2.0
+
+  attack_coverage:
+    new_technique_per_episode: 0.05
+    new_tactic_per_episode: 0.20
+    killchain_depth_5_bonus: 0.50
+    anneal_floor: 0.10
+    anneal_steps: 5_000_000

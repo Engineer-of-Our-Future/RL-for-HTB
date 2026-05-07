@@ -1,0 +1,22 @@
+# Top-level Hydra config. Composes default groups from configs/<group>/<name>.yaml.
+# Override at the CLI:
+#   python scripts/train_ppo.py model=policy_small
+#   python scripts/train_ppo.py train=ppo_quick env=stub
+
+defaults:
+  - model: policy_default
+  - train: ppo_default
+  - env: stub
+  - rm: rm_default
+  - _self_
+
+run_name: htbrl_v01
+seed: 0
+device: cuda
+output_dir: runs/${run_name}
+checkpoint_every_n_updates: 10
+log_every_n_steps: 1
+
+# Reserved for experiments. The trainer can read `cfg.experiment` and switch
+# behavior off the value.
+experiment: null

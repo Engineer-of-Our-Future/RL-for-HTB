@@ -1,0 +1,15 @@
+# Default policy config (~27 M params at vocab=32k, n_tools=300).
+# Matches PolicyConfig in src/htbrl/model/policy.py.
+
+# @package _group_
+
+vocab_size: 32768
+n_tools: 300
+n_matrices: 3
+d_model: 384
+n_layers: 8
+n_heads: 8
+d_ff: 1536
+max_seq_len: 1024
+dropout: 0.1
+slot_vocab_sizes: []

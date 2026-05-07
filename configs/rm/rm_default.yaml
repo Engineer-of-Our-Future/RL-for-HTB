@@ -1,0 +1,28 @@
+# Reward-model training defaults (PLAN.md Phase 8).
+
+# @package _group_
+
+lr: 5.0e-5
+weight_decay: 0.01
+batch_size: 16
+epochs: 8
+label_smoothing: 0.0
+gradient_clip: 1.0
+
+# Active-sampling: weight pairs by the current RM's BT-prediction entropy
+active_sample_uncertainty_weight: 0.7
+
+# Refresh: every N policy-env steps, collect M new comparisons and continue-train RM
+refresh_every_env_steps: 500_000
+refresh_n_comparisons: 200
+
+# Calibration target: held-out pairwise accuracy must clear this before we
+# start using the RM in PPO.
+min_held_out_accuracy: 0.65
+
+# Feedback UI
+feedback_ui:
+  host: 127.0.0.1
+  port: 8765
+  snippet_window_steps: 12
+  preferences_db: data/preferences.db

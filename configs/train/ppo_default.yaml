@@ -1,0 +1,57 @@
+# Default PPO training config (PLAN.md Phase 6).
+
+# @package _group_
+
+# Optimizer
+lr: 3.0e-4
+weight_decay: 0.0
+betas: [0.9, 0.999]
+eps: 1.0e-8
+fused: true
+
+# PPO
+clip_range: 0.2
+value_clip_range: 0.2
+value_coef: 0.5
+entropy_coef: 0.02       # high; preserves cold-start exploration
+n_epochs: 4
+minibatch_size: 256
+max_grad_norm: 0.5
+target_kl_for_early_stop: 0.05
+normalize_advantages: true
+
+# GAE
+gamma: 0.995
+lam: 0.95
+
+# Rollout shape
+n_steps: 128
+n_envs: 8
+
+# RND curiosity
+rnd:
+  enabled: true
+  d_in: 384
+  d_hidden: 256
+  d_out: 128
+  beta_init: 0.5
+  beta_final: 0.05
+  anneal_env_steps: 5_000_000
+
+# KL controller (vs reference policy)
+kl_ctrl:
+  enabled: true
+  init_coef: 0.2
+  target_kl: 0.02
+  scale_up: 1.5
+  scale_down: 1.5
+  min_coef: 1.0e-4
+  max_coef: 10.0
+
+# Total budget (used by training scripts as outer-loop terminator)
+total_env_steps: 10_000_000
+
+# Mixed-precision
+bf16_forward: true
+fp32_master_weights: true
+gradient_checkpointing: false

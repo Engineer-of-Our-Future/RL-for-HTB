@@ -1,0 +1,12 @@
+# Reward model config (~12 M params at vocab=32k).
+# Matches RewardModelConfig in src/htbrl/rm/model.py.
+
+# @package _group_
+
+vocab_size: 32768
+d_model: 256
+n_layers: 4
+n_heads: 8
+d_ff: 1024
+max_seq_len: 1024
+dropout: 0.1

