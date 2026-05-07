@@ -48,6 +48,19 @@ def _redacted_email(s: str) -> str:
     return f"{user[:2]}***@{host}"
 
 
+def _find_system_chrome() -> str | None:
+    """Auto-detect a system Chrome (or Edge) install on Windows."""
+    for candidate in (
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ):
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
 def _shot(page, dest: Path, label: str) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -79,8 +92,24 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[check] screenshots dir : {shots_dir}")
     print(f"[check] headless        : {headless}")
 
+    # Optional: use the user's installed Chrome instead of Playwright's chromium
+    # build (sometimes resolves Cloudflare false positives, but we do NOT layer
+    # bot-evasion patches on top - if Cloudflare blocks us, the user logs in
+    # manually via HTBRL_ACADEMY_MANUAL_LOGIN=1).
+    chrome_path = os.environ.get("HTBRL_CHROME_PATH") or _find_system_chrome()
+    if chrome_path:
+        print(f"[check] using system Chrome at {chrome_path}")
+
+    manual_login = os.environ.get("HTBRL_ACADEMY_MANUAL_LOGIN", "0") == "1"
+    if manual_login:
+        print("[check] HTBRL_ACADEMY_MANUAL_LOGIN=1 -> you log in manually in the "
+              "browser window; the script will save cookies once you reach the dashboard")
+
     with sync_playwright() as pw_runtime:
-        browser = pw_runtime.chromium.launch(headless=headless, slow_mo=100)
+        launch_kwargs: dict[str, Any] = {"headless": headless, "slow_mo": 100}
+        if chrome_path:
+            launch_kwargs["executable_path"] = chrome_path
+        browser = pw_runtime.chromium.launch(**launch_kwargs)
         ctx_kwargs: dict[str, Any] = {}
         if cookies_path.exists():
             ctx_kwargs["storage_state"] = str(cookies_path)
@@ -90,15 +119,29 @@ def main(argv: list[str] | None = None) -> int:
         ctx.set_default_timeout(15_000)
         page = ctx.new_page()
 
-        # Stage 1: navigate to the academy dashboard. If we're already logged in
-        # (cookies), this is a fast load. Otherwise the SSO flow kicks in.
+        # Stage 1: navigate to the academy dashboard. The site is a SPA that
+        # checks auth via API and EITHER renders the dashboard (if our cookies
+        # are valid) OR redirects to account.hackthebox.com/login.
         print("[check] step 1: GET /app/dashboard ...")
         try:
             page.goto("https://academy.hackthebox.com/app/dashboard")
         except Exception as exc:
             print(f"[check] goto raised: {exc}")
-        page.wait_for_load_state("domcontentloaded")
+        # Wait for the SPA to settle: either the login form appears (we need
+        # to log in) or the academy chrome renders (we're authenticated).
+        try:
+            page.wait_for_function(
+                "() => document.querySelector('#loginEmail') || "
+                "document.querySelector('.htb-user-avatar') || "
+                "document.querySelector('[data-test=\"user-menu\"]') || "
+                "document.querySelector('aside') ||  /* academy nav rail */ "
+                "document.querySelector('.htb-app-bar')",
+                timeout=20_000,
+            )
+        except Exception:
+            print("[check]   SPA never resolved; continuing with whatever's on screen")
         _shot(page, shots_dir / "01_after_initial_get.png", "post-initial-get")
+        print(f"[check]   landed URL: {page.url}")
 
         if no_login:
             print("[check] HTBRL_ACADEMY_NO_LOGIN=1 -> chromium-launch smoke OK; exiting")
@@ -106,9 +149,43 @@ def main(argv: list[str] | None = None) -> int:
             browser.close()
             return 0
 
-        # Stage 2: if URL contains 'login' or 'sso' / 'account', we need creds.
-        url = page.url.lower()
-        if any(s in url for s in ("login", "sso", "account.hackthebox.com")):
+        # Stage 2: detect via DOM, not URL. If the login form selector is on
+        # the page, we need to authenticate; otherwise we're already in.
+        login_form_present = page.locator("#loginEmail, input[name='email']").count() > 0
+        print(f"[check] step 2: login form present in DOM = {login_form_present}")
+
+        if login_form_present and manual_login:
+            # Hand the wheel to the human. We just wait for them to log in
+            # successfully (= login form disappears). No keystrokes, no
+            # bot-evasion patches, just a normal browser they drive.
+            print("=" * 64)
+            print(" MANUAL LOGIN MODE")
+            print(" 1. The browser window in front of you is on the HTB SSO page.")
+            print(" 2. Log in normally - solve any Cloudflare challenge.")
+            print(" 3. Once you reach the academy dashboard, this script will")
+            print("    auto-detect it and save cookies. Then quit on its own.")
+            print(" 4. Up to 5 minutes timeout. Ctrl+C to abort.")
+            print("=" * 64)
+            try:
+                page.wait_for_function(
+                    "() => !document.querySelector('#loginEmail') && "
+                    "!document.querySelector('input[name=\"email\"]')",
+                    timeout=300_000,
+                )
+                print("[check] manual login detected (form gone). Saving cookies.")
+            except Exception as exc:
+                print(f"[check] manual login timed out: {exc}")
+            try:
+                ctx.storage_state(path=str(cookies_path))
+                print(f"[check] saved cookies -> {cookies_path}")
+            except Exception as exc:
+                print(f"[check] saving cookies failed: {exc}")
+            _shot(page, shots_dir / "06_after_manual_login.png", "after-manual-login")
+            ctx.close()
+            browser.close()
+            return 0
+
+        if login_form_present:
             print(f"[check] step 2: SSO login form expected at {page.url}")
 
             # Real selectors (captured from the live DOM at
@@ -130,6 +207,17 @@ def main(argv: list[str] | None = None) -> int:
                 "form#loginForm button[type='submit']:not([disabled])",
                 "button[type='submit']:not([disabled])",
             ]
+
+            # Vuetify mounts the form via JS, so DOMContentLoaded fires before
+            # the inputs exist. Wait up to 20 s for the first selector that
+            # matches anything in our fallback lists to appear.
+            try:
+                page.wait_for_selector(
+                    ", ".join(email_sels), timeout=20_000, state="attached",
+                )
+                print("[check]   form mounted")
+            except Exception as exc:
+                print(f"[check]   WARNING: timed out waiting for form to mount: {exc}")
 
             email_loc = pw_loc = submit_loc = None
             for sel in email_sels:
