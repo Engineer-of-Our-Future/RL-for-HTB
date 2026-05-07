@@ -27,7 +27,7 @@ If you run on different hardware, expect to revisit the model size, batch size, 
 ```
 
 ## Status
-**Phases 0–9 + 11 + 5b auto-learner.** Tool registry covers all 14 Enterprise tactics (73 tools) + 7 ICS dual-tagged. Full PPO loop runs end-to-end against the stub env; real `HTBEnv` works against a WSL Kali attacker. HTB Academy auto-learner with study-only / auto-submit modes ships under `htbrl.academy`. **292 tests passing.**
+**Phases 0–9 + 11 + 5b auto-learner.** Tool registry covers all 14 Enterprise tactics (73 tools) + 7 ICS dual-tagged. Full PPO loop runs end-to-end against the stub env; real `HTBEnv` works against a WSL Kali attacker. HTB Academy auto-learner with study-only / auto-submit modes ships under `htbrl.academy`. The wizard now dispatches HTTP / LFI bypass / SSH-shell / theory-cURL probes per question, so module-23 filter-evasion and module-18 shell questions resolve without operator intervention. **504 tests passing.**
 
 ## HTB Academy auto-learner (Phase 5b)
 A separate progression path that reads HTB Academy modules, optionally drives the per-module SSH sandbox to derive answers, and writes every interaction to the same `Demonstration` format the BC trainer reads. Two modes:

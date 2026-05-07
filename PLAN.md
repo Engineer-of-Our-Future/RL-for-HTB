@@ -391,6 +391,9 @@ The academy charges cubes to *open* a module, so opening a second one before the
 - `src/htbrl/academy/orchestrator.py` — `AutoLearner` main loop with gate enforcement + per-module dedupe.
 - `src/htbrl/academy/auto_demo_writer.py` — `module_intro_turn`, `cheat_sheet_turn`, `section_read_turn`, `answer_to_demo_turn`, `sandbox_cmd_to_demo_turn`, `session_to_demonstration`.
 - `src/htbrl/academy/walkthrough.py` — `LabWalkthroughBuilder` (renders demos as Markdown for operator review).
+- `src/htbrl/academy/target_runner.py` — `HttpTargetRunner` + `probe_target_for_answer` (HTTP question-pattern probe: server header / version / JSON field / form-login + search / CRUD chain / HTML endpoint discovery).
+- `src/htbrl/academy/ssh_runner.py` — `SshTargetRunner` (paramiko, capped output, no creds-on-cmdline) + `parse_ssh_credentials` (regex over "SSH to <ip> with user X password Y" prompts) + `probe_via_ssh` (9-pattern question dispatcher: kernel version, inode lookup, last-modified file, .ext file counts, dpkg counts, systemctl unit-by-description, binary path, shell of user). Mod 18-style shell questions resolve in one SSH round-trip.
+- `src/htbrl/academy/lfi_runner.py` — `try_lfi_read` walks LFI bypass payloads in priority order (php://filter base64 → recursive `....//` → URL-encoded `%2e%2e%2f` → approved-prefix variants), `try_data_wrapper_rce` for one-shot `data://` inline-PHP execution, `probe_via_lfi` auto-detects LFI param name and approved prefix from section code blocks. Mod 23 sec 1491/1492/253 verified live.
 - `scripts/htb_academy.py` — original CLI (mock transport).
 - `scripts/htb_academy_login_check.py` — multi-mode login probe (CDP-attach, manual, no-login).
 - `scripts/htb_academy_run.py` — single-module study-only walker against live academy.
@@ -407,7 +410,7 @@ The academy charges cubes to *open* a module, so opening a second one before the
 3. **Labs after academy.** Once the curriculum is exhausted (or the operator decides), the top-level training script pivots to real `HTBEnv` rollouts (Phase 4). Phase 5b owns the academy half; the labs half is the next-up work.
 
 ### Verification (delivered)
-- `pytest tests/academy/`: **127+ tests** covering: dataclasses, mock session lifecycle, ranked-candidate answerer for every question type + cheat-sheet matcher + junk filter, curriculum eligibility / ordering / unlock gate, orchestrator end-to-end (study-only + auto-submit + multi-module gate enforcement), auto-demo-writer turn shape (intro + cheat + section_read + answer + sandbox_cmd), MITRE mapping, demo coverage CLI, and wizard safety guards (lab-flag detection, auto-submit refusal).
+- `pytest tests/academy/`: **200+ tests** covering: dataclasses, mock session lifecycle, ranked-candidate answerer for every question type + cheat-sheet matcher + junk filter, curriculum eligibility / ordering / unlock gate, orchestrator end-to-end (study-only + auto-submit + multi-module gate enforcement), auto-demo-writer turn shape (intro + cheat + section_read + answer + sandbox_cmd), MITRE mapping, demo coverage CLI, wizard safety guards (lab-flag detection, auto-submit refusal), HTTP target probe, **SSH probe** (paramiko mocked: connect failures, output capping, batch transport reuse, 9 question patterns, bail-out on unmatched prompts), **LFI probe** (payload set + ordering pinned; approved-prefix detection from code blocks; bail-out on non-LFI prompts).
 - Real-academy walks completed for every module the research account owns:
   - **Module 9** "Learning Process" — 20 sections, 0 questions, 21 turns, 75.6 KB theory.
   - **Module 15** "Intro to Academy" — 8 sections, 0 questions, 10 turns (intro + cheat + sections), 19.4 KB.
