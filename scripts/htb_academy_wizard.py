@@ -74,6 +74,7 @@ from htbrl.academy.ssh_runner import (
     probe_via_ssh,
 )
 from htbrl.academy.lfi_runner import probe_via_lfi
+from htbrl.academy.rfi_runner import RfiListener, probe_via_rfi
 from htbrl.academy.page_models import (
     AcademyAnswer,
     AcademyModule,
@@ -242,7 +243,65 @@ def _build_argparser() -> argparse.ArgumentParser:
         "--no-hints", dest="use_hints", action="store_false",
         help="opt out of the auto-Hint behavior",
     )
+    # ---- RFI listener (optional) -----------------------------------------
+    # When set, the wizard spins up an RFI listener on the named Kali
+    # host so module 23 RFI sections resolve automatically. Without
+    # these flags the RFI probe stays disabled and the wizard falls
+    # back to the LFI / SSH / heuristic probes.
+    p.add_argument(
+        "--kali-host", default=os.environ.get("HTBRL_KALI_HOST"),
+        help="user@host[:port] for the Kali attacker (enables RFI probe). "
+             "Defaults to the HTBRL_KALI_HOST env var.",
+    )
+    p.add_argument(
+        "--kali-password", default=os.environ.get("HTBRL_KALI_PASSWORD"),
+        help="password for --kali-host (defaults to HTBRL_KALI_PASSWORD). "
+             "Use a key (HTBRL_KALI_KEY) instead of a password whenever "
+             "possible — this flag exists for dev setups only.",
+    )
+    p.add_argument(
+        "--kali-listen-ip", default=None,
+        help="IP the academy target sees when reaching the Kali listener "
+             "(usually the Kali OpenVPN tun0 address, NOT the SSH IP). "
+             "Required for --kali-host to enable the RFI probe.",
+    )
     return p
+
+
+def _build_kali_ssh(args) -> SshTargetRunner | None:
+    """Construct an SshTargetRunner from the wizard's --kali-* flags.
+
+    Returns None when the operator hasn't supplied creds (in which
+    case the RFI probe stays disabled). Validates that all required
+    pieces are present together and prints a clear hint when not.
+    """
+    if not args.kali_host:
+        return None
+    if not args.kali_password:
+        print("[wizard] --kali-host set without --kali-password; "
+              "RFI probe will not run. (Pass --kali-password or set "
+              "HTBRL_KALI_PASSWORD.)")
+        return None
+    if not args.kali_listen_ip:
+        print("[wizard] --kali-host set without --kali-listen-ip; "
+              "RFI probe will not run. The listener needs the IP the "
+              "target box sees (usually the Kali tun0 address).")
+        return None
+    user_at_host, _, port_str = args.kali_host.partition(":")
+    user, _, host = user_at_host.partition("@")
+    if not (user and host):
+        print(f"[wizard] --kali-host {args.kali_host!r} must be "
+              f"'user@host[:port]'; RFI probe disabled.")
+        return None
+    try:
+        port = int(port_str) if port_str else 22
+    except ValueError:
+        print(f"[wizard] --kali-host port {port_str!r} is not numeric; "
+              "RFI probe disabled.")
+        return None
+    return SshTargetRunner(
+        host=host, port=port, username=user, password=args.kali_password,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -255,6 +314,17 @@ def main(argv: list[str] | None = None) -> int:
     sections: list[AcademySection] = []
     seen_ids: set[str] = set()
     auto_for_remainder = False  # toggled when operator types "auto"
+
+    # Optional RFI listener: opens lazily the first time we hit an
+    # RFI-shaped question, then reuses the same listener for the rest
+    # of the run. ``kali_ssh is None`` means the operator didn't pass
+    # the --kali-* flags, in which case the RFI probe stays disabled.
+    kali_ssh = _build_kali_ssh(args)
+    rfi_listener: RfiListener | None = None
+    if kali_ssh is not None:
+        print(f"[wizard] RFI probe armed: kali={args.kali_host} "
+              f"listen_ip={args.kali_listen_ip} (listener opens on first "
+              f"RFI-shaped question)")
 
     try:
         cdp, ws, ws_url = open_cdp(args.cdp)
@@ -436,7 +506,33 @@ def main(argv: list[str] | None = None) -> int:
                             )
                             if probe is not None:
                                 probe_label = "SSH-PROBE"
-                    # 4. Theory-driven cURL probe (replay section examples).
+                    # 4. RFI probe (mod 23 RFI sections). Requires the
+                    #    operator to pass --kali-host + --kali-listen-ip;
+                    #    the listener spins up on first use and is
+                    #    reused for the rest of the run.
+                    if probe is None and kali_ssh is not None:
+                        if rfi_listener is None:
+                            try:
+                                rfi_listener = RfiListener(
+                                    kali_ssh,
+                                    listen_ip=args.kali_listen_ip,
+                                )
+                                rfi_listener.open()
+                                print(f"[wizard]   RFI listener up: "
+                                      f"{rfi_listener._info.base_url}")  # type: ignore[union-attr]
+                            except Exception as exc:
+                                print(f"[wizard]   RFI listener failed: {exc}; "
+                                      "skipping RFI probe.")
+                                rfi_listener = None
+                        if rfi_listener is not None:
+                            probe = probe_via_rfi(
+                                target_runner, rfi_listener, question.prompt,
+                                hints=question.hints,
+                                section_code_blocks=section.code_blocks,
+                            )
+                            if probe is not None:
+                                probe_label = "RFI-PROBE"
+                    # 5. Theory-driven cURL probe (replay section examples).
                     if probe is None:
                         probe = probe_code_blocks_for_flag(
                             target_runner, section.code_blocks,
@@ -625,6 +721,15 @@ def main(argv: list[str] | None = None) -> int:
             ws.close()
         except Exception:
             pass
+        # Tear down the RFI listener if we ever opened one. This kills
+        # the python3 -m http.server on Kali and removes the tempdir
+        # so subsequent runs aren't fighting over the same port.
+        if rfi_listener is not None:
+            try:
+                rfi_listener.close()
+                print("[wizard] RFI listener closed")
+            except Exception as exc:
+                print(f"[wizard] RFI listener close failed: {exc}")
 
     # -- finalize ----------------------------------------------------------------
     n_q = sum(len(s.questions) for s in sections)
