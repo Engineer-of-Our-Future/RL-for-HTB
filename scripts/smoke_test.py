@@ -60,7 +60,7 @@ def _check_ssh() -> bool:
     host_env = os.environ.get("HTBRL_KALI_HOST")
     if not host_env:
         print("[SKIP] HTBRL_KALI_HOST not set - skipping SSH check.")
-        print("       Example: HTBRL_KALI_HOST=kali@127.0.0.1:2222")
+        print("       Example: HTBRL_KALI_HOST=htbrl@127.0.0.1:2222")
         return True
 
     user_at_host, _, port_str = host_env.partition(":")
@@ -83,8 +83,22 @@ def _check_ssh() -> bool:
     client = paramiko.SSHClient()
     client.load_system_host_keys()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    connect_kwargs = {
+        "hostname": hostname,
+        "port": port,
+        "username": user,
+        "timeout": 5,
+        "allow_agent": True,
+        "look_for_keys": True,
+    }
+    key_path = os.environ.get("HTBRL_KALI_KEY")
+    if key_path:
+        # Explicit private key (e.g. ~/.ssh/htbrl_kali for the WSL Kali setup).
+        connect_kwargs["key_filename"] = os.path.expanduser(key_path)
+
     try:
-        client.connect(hostname, port=port, username=user, timeout=5, allow_agent=True, look_for_keys=True)
+        client.connect(**connect_kwargs)
     except Exception as exc:  # paramiko raises a wide tree
         print(f"[FAIL] SSH connect to {host_env}: {exc}")
         return False

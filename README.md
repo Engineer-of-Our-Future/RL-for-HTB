@@ -27,7 +27,7 @@ If you run on different hardware, expect to revisit the model size, batch size, 
 ```
 
 ## Status
-**Phase 0 — project bootstrap.** Repo skeleton in place; smoke test wires up `torch` and SSH-to-Kali. No model code, no training yet.
+**Phases 0–6 + 8/11 prep + Phase 4 real env land.** Tool registry covers all 14 Enterprise tactics (73 tools) + 7 ICS dual-tagged. Full PPO loop runs end-to-end against the stub env; real `HTBEnv` works against a WSL Kali attacker. 238 tests passing.
 
 ## Quick install (Windows host)
 ```powershell
@@ -37,11 +37,47 @@ pip install -e ".[dev]"
 python scripts\smoke_test.py
 ```
 
-The smoke test prints your GPU name + VRAM and (optionally) `whoami` over SSH to Kali. Set the SSH endpoint via env var:
+Without WSL/Kali set up, the SSH check is skipped and only the GPU portion runs.
+
+## WSL2 Kali attacker (Phase 4)
+The real env needs an SSH-reachable Kali host. The repo's `HTBEnv` opens a persistent SSH session into Kali and renders structured tool calls into bash via the registry. Set up Kali like so (one-time, ~5 min, ~700 MB download):
 
 ```powershell
-$env:HTBRL_KALI_HOST = "kali@127.0.0.1:2222"
-python scripts\smoke_test.py
+# 1. install the WSL2 distro (no first-launch interactive prompt)
+wsl --install -d kali-linux --no-launch
+
+# 2. inside Kali, set up sshd + htbrl user with sudo + your SSH key
+$pubkey = Get-Content ~\.ssh\htbrl_kali.pub
+wsl -d kali-linux --user root -- bash -c "
+  apt-get update -qq && apt-get install -y -qq openssh-server sudo nmap smbclient curl dnsutils
+  useradd -m -s /bin/bash -G sudo htbrl 2>/dev/null || true
+  echo 'htbrl ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/99-htbrl
+  mkdir -p /home/htbrl/.ssh && echo '$pubkey' > /home/htbrl/.ssh/authorized_keys
+  chmod 700 /home/htbrl/.ssh && chmod 600 /home/htbrl/.ssh/authorized_keys
+  chown -R htbrl:htbrl /home/htbrl/.ssh
+  sed -i 's/#\?Port 22.*/Port 2222/' /etc/ssh/sshd_config
+  sed -i 's/#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+  ssh-keygen -A
+  printf '[boot]\ncommand = service ssh start\n[user]\ndefault = htbrl\n' > /etc/wsl.conf
+  service ssh start
+"
+
+# 3. test from PowerShell
+$env:HTBRL_KALI_HOST = 'htbrl@127.0.0.1:2222'
+$env:HTBRL_KALI_KEY  = "$HOME\.ssh\htbrl_kali"
+python scripts\smoke_test.py    # both GPU and SSH should be OK
+```
+
+If you don't already have a key, generate one first: `ssh-keygen -t ed25519 -f ~/.ssh/htbrl_kali -N ""`.
+
+The `[boot] command = service ssh start` in `/etc/wsl.conf` makes sshd auto-start on every WSL boot — but WSL has to be **fully shut down** (`wsl --shutdown`) to re-read the config, not just have the distro stop on idle.
+
+To run pytest including the SSH-and-Kali tests:
+
+```powershell
+$env:HTBRL_KALI_HOST = 'htbrl@127.0.0.1:2222'
+$env:HTBRL_KALI_KEY  = "$HOME\.ssh\htbrl_kali"
+pytest -q
 ```
 
 ## Project layout
