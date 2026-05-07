@@ -232,6 +232,13 @@ def main(argv: list[str] | None = None) -> int:
     api_conclusion = ""
     api_takeaways = ""
     api_title = ""
+    # Minimal default module so the finalize block always has something to
+    # save - replaced inside the try once API metadata is fetched.
+    module = AcademyModule(
+        id=str(args.module_id),
+        title=args.module_title or f"Module {args.module_id}",
+        tier=0, sections=sections, category="general",
+    )
     try:
         # Capture cube balance BEFORE we attempt anything, for the unlock-gate
         # readiness report at the end of the run.
@@ -254,6 +261,20 @@ def main(argv: list[str] | None = None) -> int:
                   f"prelude={len(api_prelude)} title={api_title!r}")
         else:
             print(f"[wizard] API metadata unavailable: {api}")
+
+        # Build the module wrapper ONCE - reused by the answerer (every
+        # question) AND by session_to_demonstration at the end. The
+        # ``sections`` list is shared by reference so as the walk discovers
+        # new sections they're visible to both consumers without rewriting.
+        module = AcademyModule(
+            id=str(args.module_id),
+            title=args.module_title or api_title or f"Module {args.module_id}",
+            tier=0, sections=sections, category="general",
+            cheat_sheet=cheat_sheet_rows,
+            prelude=api_prelude,
+            conclusion=api_conclusion,
+            takeaways=api_takeaways,
+        )
 
         entered, url = enter_module(cdp, args.module_id)
         print(f"[wizard] entered module: {url}  (entered={entered})")
@@ -289,19 +310,9 @@ def main(argv: list[str] | None = None) -> int:
                     ), True))  # accepted=True because the academy already counts it
                     continue
 
-                # Build a temporary module wrapper so the answerer can also
-                # match against the cheat sheet (the canonical command/desc
-                # table). This is the same module we'll save to disk later.
-                _module_for_answerer = AcademyModule(
-                    id=str(args.module_id),
-                    title=args.module_title or api_title or f"Module {args.module_id}",
-                    tier=0, sections=sections, category="general",
-                    cheat_sheet=cheat_sheet_rows,
-                    prelude=api_prelude,
-                )
                 candidates = answerer.propose(
                     question, section, top_n=args.top_n,
-                    module=_module_for_answerer,
+                    module=module,
                 )
                 top = candidates[0] if candidates else None
                 lab_flag = is_lab_flag_question(question)
@@ -461,17 +472,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[wizard] done: sections={len(sections)} questions={n_q} "
           f"attempts={n_attempts} accepted={n_accepted}")
 
-    module = AcademyModule(
-        id=str(args.module_id),
-        title=args.module_title or api_title or f"Module {args.module_id}",
-        tier=0,
-        sections=sections,
-        category="general",
-        cheat_sheet=cheat_sheet_rows,
-        prelude=api_prelude,
-        conclusion=api_conclusion,
-        takeaways=api_takeaways,
-    )
+    # Reuse the wrapper we built before the walk - sections were populated
+    # in-place during the walk, so the same instance is fully formed now.
     extra = {
         "cdp_endpoint": args.cdp,
         "wizard": True,

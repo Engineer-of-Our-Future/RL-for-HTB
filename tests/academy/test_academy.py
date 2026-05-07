@@ -954,6 +954,63 @@ def test_propose_without_module_does_not_use_cheat_sheet():
     assert all(c.method != "cheat_sheet_match" for c in cands)
 
 
+def test_module_intro_turn_emits_when_any_intro_text_exists():
+    from htbrl.academy.auto_demo_writer import module_intro_turn
+    module = AcademyModule(
+        id="m1", title="Linux Fundamentals", tier=0,
+        prelude="Linux is an indispensable tool in cybersecurity.",
+        takeaways="You'll learn shell basics, the filesystem, and process management.",
+        conclusion="With these foundations you're ready for offensive Linux work.",
+    )
+    turn = module_intro_turn(module)
+    assert turn is not None
+    assert turn.action_tool_name == "academy_module_intro"
+    assert "## Prelude" in turn.obs_text
+    assert "## Takeaways" in turn.obs_text
+    assert "## Conclusion" in turn.obs_text
+    assert turn.action_slots["has_prelude"] is True
+    assert turn.action_slots["has_takeaways"] is True
+    assert turn.action_slots["has_conclusion"] is True
+
+
+def test_module_intro_turn_emits_with_only_prelude():
+    """Modules in real life sometimes have prelude only - the turn should
+    still emit and report the missing fields in slots."""
+    from htbrl.academy.auto_demo_writer import module_intro_turn
+    module = AcademyModule(
+        id="m1", title="x", tier=0,
+        prelude="some intro text",
+    )
+    turn = module_intro_turn(module)
+    assert turn is not None
+    assert turn.action_slots["has_prelude"] is True
+    assert turn.action_slots["has_takeaways"] is False
+    assert turn.action_slots["has_conclusion"] is False
+
+
+def test_module_intro_turn_returns_none_for_empty_module():
+    from htbrl.academy.auto_demo_writer import module_intro_turn
+    module = AcademyModule(id="m1", title="x", tier=0)
+    assert module_intro_turn(module) is None
+
+
+def test_session_to_demonstration_includes_intro_before_cheatsheet():
+    """Order matters for BC: intro -> cheatsheet -> sections -> questions."""
+    from htbrl.academy.auto_demo_writer import session_to_demonstration
+    module = AcademyModule(
+        id="m1", title="Linux Fundamentals", tier=0,
+        sections=[AcademySection(id="s1", title="x", body_text="x")],
+        prelude="intro text",
+        cheat_sheet=[{"command": "ls", "description": "lists"}],
+    )
+    demo = session_to_demonstration(module, [])
+    tool_names = [t.action_tool_name for t in demo.turns]
+    intro_idx = tool_names.index("academy_module_intro")
+    cheat_idx = tool_names.index("academy_cheat_sheet")
+    section_idx = tool_names.index("academy_section_read")
+    assert intro_idx < cheat_idx < section_idx
+
+
 def test_cheat_sheet_turn_emits_when_module_has_rows():
     from htbrl.academy.auto_demo_writer import cheat_sheet_turn
     module = AcademyModule(

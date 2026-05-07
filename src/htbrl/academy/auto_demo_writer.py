@@ -169,6 +169,63 @@ def section_read_turn(
     )
 
 
+def module_intro_turn(
+    module: AcademyModule,
+    *,
+    module_techniques: list[str] | None = None,
+) -> DemoTurn | None:
+    """Emit one synthetic 'I read the module intro' turn, if any.
+
+    Combines the module's ``prelude`` (intro paragraph, what this module
+    teaches), ``takeaways`` (learning objectives), and ``conclusion``
+    (wrap-up summary) into a single training turn placed at the very
+    start of the demo. These are pure theory text - no commands - so
+    they don't belong in the cheat sheet turn but are still valuable
+    BC signal because they often state the literal answer to summary
+    questions verbatim.
+
+    Returns None when the module has no intro/takeaways/conclusion text
+    (e.g. theory-only modules whose API record is sparse). Caps total
+    text at ~6 KB to stay token-bounded.
+    """
+    prelude = (module.prelude or "").strip()
+    takeaways = (module.takeaways or "").strip()
+    conclusion = (module.conclusion or "").strip()
+    if not (prelude or takeaways or conclusion):
+        return None
+    parts: list[str] = [f"[academy-intro:{module.title}]"]
+
+    def _add(label: str, text: str, cap: int) -> None:
+        if not text:
+            return
+        if len(text) > cap:
+            text = text[:cap] + "…"
+        parts.append(f"## {label}\n{text}")
+
+    _add("Prelude", prelude, 2_500)
+    _add("Takeaways", takeaways, 2_000)
+    _add("Conclusion", conclusion, 1_500)
+    obs_text = "\n\n".join(parts)
+    return DemoTurn(
+        obs_text=obs_text,
+        action_tool_id=-1,
+        action_tool_name="academy_module_intro",
+        action_slots={
+            "module_id": module.id,
+            "module_title": module.title,
+            "has_prelude": bool(prelude),
+            "has_takeaways": bool(takeaways),
+            "has_conclusion": bool(conclusion),
+        },
+        action_render=f"academy_module_intro: {module.title!r}",
+        # Modest reward: intro reading is valuable but cheaper than a
+        # cheatsheet row that maps directly to a question answer.
+        reward=0.03,
+        techniques_attempted=list(module_techniques or []),
+        techniques_succeeded=[],
+    )
+
+
 def cheat_sheet_turn(
     module: AcademyModule,
     *,
@@ -187,14 +244,15 @@ def cheat_sheet_turn(
     BC training on this turn lets the policy attend to the table verbatim.
     Module-level ATT&CK techniques tag the turn so the technique-coverage
     report credits the demo for reading the canonical reference.
+
+    Note: ``module_intro_turn`` separately captures prelude/takeaways/
+    conclusion - those don't repeat here, so the cheat-sheet turn is
+    purely the table.
     """
     rows = module.cheat_sheet or []
     if not rows:
         return None
     parts: list[str] = [f"[academy-cheatsheet:{module.title}]"]
-    if module.prelude:
-        prelude = module.prelude if len(module.prelude) <= 1024 else module.prelude[:1024] + "…"
-        parts.append("## Prelude\n" + prelude)
     parts.append("## Cheatsheet")
     # Render as Markdown table for the policy's consumption (matches the
     # academy's own format, so BC can fall back on training-data verbatim).
@@ -285,10 +343,15 @@ def session_to_demonstration(
     # narrowing reuses it for every section.
     module_techniques = techniques_for_module(module)
 
-    # If the module carries a cheat sheet (academy-side canonical command
-    # reference), emit it FIRST so BC sees the answer key before the
-    # questions. This often turns "what command does X" questions into
-    # near-trivial pattern matches against a row the policy has already read.
+    # Emit a module-level intro turn (prelude + takeaways + conclusion)
+    # FIRST. This is the canonical "what does this module teach" text and
+    # often states the literal answer to summary questions.
+    intro_turn = module_intro_turn(module, module_techniques=module_techniques)
+    if intro_turn is not None:
+        turns.append(intro_turn)
+    # Then the cheat sheet (canonical command -> description map). BC
+    # therefore sees the answer key BEFORE any questions, turning
+    # "what command does X" into near-trivial pattern matches.
     cheat_turn = cheat_sheet_turn(module, module_techniques=module_techniques)
     if cheat_turn is not None:
         turns.append(cheat_turn)
