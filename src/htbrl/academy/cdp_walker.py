@@ -147,19 +147,20 @@ _ENTRY_BUTTON_JS = """
 # JS that fills a question's input by index in the current section view, fires
 # Vue-friendly events, and clicks the matching ``Submit`` button. The wizard
 # polls afterwards to detect accept/reject.
+#
+# Two phases needed because Vue/Vuetify enables the Submit button reactively
+# AFTER the input event fires - if we click immediately the button is still
+# in its `disabled` state. We `await` a couple of macrotasks (setTimeout 0 +
+# requestAnimationFrame) before reading `btn.disabled`, which gives Vue's
+# scheduler time to flush the binding update.
 _FILL_AND_SUBMIT_JS = r"""
-(function(qIdx, answer) {
+(async function(qIdx, answer) {
   const inputs = Array.from(document.querySelectorAll(
     'input[placeholder*="answer" i], input[placeholder*="Write your"]'
   ));
   const inp = inputs[qIdx];
   if (!inp) return {ok:false, why:'no input at idx ' + qIdx};
   if (inp.disabled || inp.readOnly) return {ok:false, why:'input disabled'};
-  // Vue 3 / Vuetify wraps value via prototype setter; bypass to actually set.
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-  setter.call(inp, answer);
-  inp.dispatchEvent(new Event('input',  {bubbles:true}));
-  inp.dispatchEvent(new Event('change', {bubbles:true}));
   // Find the enclosing collapse-card and locate its Submit button.
   let card = inp;
   for (let i=0; i<8 && card; i++) {
@@ -167,11 +168,38 @@ _FILL_AND_SUBMIT_JS = r"""
     card = card.parentElement;
   }
   if (!card) card = inp.closest('li') || inp.parentElement;
-  const btn = Array.from(card.querySelectorAll('button')).find(b =>
-    (b.innerText||'').trim() === 'Submit'
+  const findBtn = () => Array.from(card.querySelectorAll('button')).find(
+    b => (b.innerText||'').trim() === 'Submit'
   );
-  if (!btn)        return {ok:false, why:'no submit button'};
-  if (btn.disabled) return {ok:false, why:'submit disabled'};
+  // Vue 3 wraps the input's ``value`` setter via Object.defineProperty;
+  // we bypass it so the change reaches the bound v-model. Then dispatch
+  // input + change + a focus/blur pair so any debounced validators fire.
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  setter.call(inp, answer);
+  inp.dispatchEvent(new Event('input',  {bubbles:true}));
+  inp.dispatchEvent(new Event('change', {bubbles:true}));
+  inp.focus();
+  // Vue's reactive flush takes ~500-600ms in HTB Academy's bundle (the
+  // bound disabled-class transitions ``htb-button--disabled`` -> normal
+  // around the 600ms mark). Poll up to 2.5s for the button to enable.
+  const deadline = Date.now() + 2500;
+  let btn = findBtn();
+  while (Date.now() < deadline) {
+    btn = findBtn();
+    if (btn && !btn.disabled
+        && !((btn.className || '').toString().includes('htb-button--disabled'))) {
+      break;
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+  if (!btn) return {ok:false, why:'no submit button'};
+  if (btn.disabled
+      || (btn.className || '').toString().includes('htb-button--disabled')) {
+    // Click anyway as a last resort; the wizard will see "pending" and
+    // we record the attempt rather than silently dropping the question.
+    btn.click();
+    return {ok:true, why:'clicked while still gated', value:inp.value};
+  }
   btn.click();
   return {ok:true, value:inp.value};
 })
@@ -179,8 +207,17 @@ _FILL_AND_SUBMIT_JS = r"""
 
 
 # Polls the question card at index for an accepted/rejected indicator.
-# Vuetify renders a green check-circle on success and a red error icon on
-# failure; we look for class fragments that survive minification.
+#
+# HTB Academy reliably signals success two ways:
+#   - The input gets ``disabled`` / ``readOnly`` once the answer is correct
+#   - A toast/banner with text "Correct!" / "+N HP" appears near the card
+# We trust the disabled flag as the strongest signal (it ALSO appears when
+# a question was already answered before this run - see below). For
+# rejection, HTB leaves the input enabled and pops a red toast / error
+# helper-text near the input. We look for the literal words "incorrect"
+# or "wrong" inside the immediate ancestor (NOT the whole card) since
+# generic class strings like "text-success" appear on the page in CSS
+# variables even before any submission.
 _QUESTION_RESULT_JS = r"""
 (function(qIdx) {
   const inputs = Array.from(document.querySelectorAll(
@@ -188,20 +225,25 @@ _QUESTION_RESULT_JS = r"""
   ));
   const inp = inputs[qIdx];
   if (!inp) return 'no_input';
+  // Strongest accept signal: HTB locks the input once accepted.
+  if (inp.disabled || inp.readOnly) return 'accepted';
   let card = inp;
   for (let i=0; i<8 && card; i++) {
     if ((card.className || '').includes('collapse')) break;
     card = card.parentElement;
   }
   if (!card) return 'no_card';
-  const html = card.innerHTML.toLowerCase();
-  if (html.includes('mdi-check') || html.includes('text-success') ||
-      html.includes('correct') || inp.disabled || inp.readOnly) {
+  // Look at visible text near the input, not the full innerHTML (which
+  // contains too many CSS class names that match "text-success" / "correct"
+  // even before any submission).
+  const txt = (card.innerText || '').toLowerCase();
+  if (/incorrect|wrong\s+answer|try\s+again/.test(txt)) return 'rejected';
+  // Toast banners are appended to <body>, not the card, so check there too.
+  const toastTxt = (document.body.innerText || '').toLowerCase();
+  if (/correct[!\s]|\+\s*\d+\s*hp/.test(toastTxt)
+      && !/incorrect/.test(toastTxt)) {
+    // A "Correct!" toast is rare without input.disabled, but accept it.
     return 'accepted';
-  }
-  if (html.includes('mdi-close') || html.includes('text-error') ||
-      html.includes('incorrect') || html.includes('wrong')) {
-    return 'rejected';
   }
   return 'pending';
 })
@@ -740,7 +782,9 @@ def submit_answer_in_dom(
     ban per the project's stated rule.
     """
     js = f"({_FILL_AND_SUBMIT_JS})({q_idx}, {json.dumps(answer_text)})"
-    res = cdp.evaluate(js) or {}
+    # The fill-and-submit JS is async (it awaits Vue's reactive flush
+    # before clicking Submit) so we must await the returned promise.
+    res = cdp.evaluate(js, await_promise=True) or {}
     if not res.get("ok"):
         return "error", str(res.get("why") or "unknown")
     deadline = time.time() + poll_seconds
