@@ -1,0 +1,105 @@
+# Mobile-matrix starter tools (PLAN.md Phase 13 prep).
+#
+# These are placeholders to validate the cross-matrix architecture. Real
+# expansion (drozer, MobSF, Frida REPL hooks, etc.) lands in v0.2 weeks 17-18.
+# Each tool runs from Kali (which has ADB / Frida / MobSF installed) against
+# an Android emulator at {emulator_host}:{emulator_port}.
+
+tools:
+  - name: adb_list_packages
+    category: enum
+    description: List installed Android package names via ADB.
+    command_template: "adb -s {emulator_host}:{emulator_port} shell pm list packages"
+    slots:
+      - { name: emulator_host, type: hostname, description: emulator host, default: 127.0.0.1 }
+      - { name: emulator_port, type: port, description: ADB port, default: 5555 }
+    runtime_cap_seconds: 30
+    output_parser_id: lines
+    attack:
+      matrices: [mobile]
+      tactics: [TA0032]
+      techniques: [T1418]
+    example_invocation: { emulator_host: 127.0.0.1, emulator_port: 5555 }
+    example_output: |
+      package:com.android.systemui
+      package:com.example.divavuln
+
+  - name: adb_pull_app_data
+    category: post-exploit
+    description: Pull a target app's /data/data directory back to Kali for offline review.
+    command_template: "adb -s {emulator_host}:{emulator_port} pull /data/data/{package_name} {local_dest}"
+    slots:
+      - { name: emulator_host, type: hostname, description: emulator host, default: 127.0.0.1 }
+      - { name: emulator_port, type: port, description: ADB port, default: 5555 }
+      - { name: package_name, type: free_string, description: target Android package }
+      - { name: local_dest, type: file_path, description: local Kali dir, default: /tmp/mobile-pull }
+    runtime_cap_seconds: 120
+    output_parser_id: raw
+    attack:
+      matrices: [mobile]
+      tactics: [TA0035]
+      techniques: [T1409]
+    example_invocation:
+      emulator_host: 127.0.0.1
+      emulator_port: 5555
+      package_name: com.example.divavuln
+      local_dest: /tmp/mobile-pull
+    example_output: |
+      pulled: 42 files, 18.4 MB
+
+  - name: mobsf_static_scan
+    category: recon
+    description: Submit an APK to MobSF for static analysis; print the JSON report path.
+    command_template: "curl -s -F 'file=@{apk_path}' -H 'Authorization: {api_key}' http://{mobsf_host}:{mobsf_port}/api/v1/upload | jq -r .hash"
+    slots:
+      - { name: apk_path, type: file_path, description: APK file on Kali }
+      - { name: api_key, type: free_string, description: MobSF API key }
+      - { name: mobsf_host, type: hostname, description: MobSF host, default: 127.0.0.1 }
+      - { name: mobsf_port, type: port, description: MobSF port, default: 8000 }
+    runtime_cap_seconds: 600
+    output_parser_id: raw
+    attack:
+      matrices: [mobile]
+      tactics: [TA0032]
+      techniques: [T1418]
+    example_invocation:
+      apk_path: /tmp/diva.apk
+      api_key: REDACTED
+      mobsf_host: 127.0.0.1
+      mobsf_port: 8000
+    example_output: "abcdef0123456789"
+
+  - name: frida_inject_script
+    category: exploit
+    description: Inject a Frida script into a running app on the connected emulator.
+    command_template: "frida -U -n {package_name} -l {script_path} --runtime=v8"
+    slots:
+      - { name: package_name, type: free_string, description: target Android package }
+      - { name: script_path, type: file_path, description: Frida script (.js) on Kali }
+    runtime_cap_seconds: 600
+    output_parser_id: raw
+    attack:
+      matrices: [mobile]
+      tactics: [TA0041, TA0030]
+      techniques: [T1407, T1635]
+    example_invocation:
+      package_name: com.example.divavuln
+      script_path: /opt/frida-scripts/dump-keychain.js
+    example_output: |
+      [Frida] hooked 12 methods
+
+  - name: objection_keychain_dump
+    category: exploit
+    description: Dump iOS-keychain-equivalent / Android keystore via Objection.
+    command_template: "objection -g {package_name} explore --startup-command 'android keystore list'"
+    slots:
+      - { name: package_name, type: free_string, description: target Android package }
+    runtime_cap_seconds: 120
+    output_parser_id: lines
+    attack:
+      matrices: [mobile]
+      tactics: [TA0031]
+      techniques: [T1409]
+    example_invocation: { package_name: com.example.divavuln }
+    example_output: |
+      Alias: secret-key-1   Algorithm: AES

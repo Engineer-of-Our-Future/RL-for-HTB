@@ -16,9 +16,10 @@ from typing import Iterable
 from htbrl.tools.loader import load_registry
 
 
-# Pretty-print labels for the Enterprise tactic IDs we expect to encounter most
-# often. Unknown IDs are still printed by ID (no breakage on new MITRE tactics).
+# Pretty-print labels for the tactic IDs we expect to encounter. Unknown IDs
+# are still printed by ID (no breakage when MITRE adds new tactics).
 _TACTIC_LABELS = {
+    # Enterprise
     "TA0001": "Initial Access",
     "TA0002": "Execution",
     "TA0003": "Persistence",
@@ -33,6 +34,34 @@ _TACTIC_LABELS = {
     "TA0040": "Impact",
     "TA0042": "Resource Development",
     "TA0043": "Reconnaissance",
+    # Mobile
+    "TA0027": "Mobile Initial Access",
+    "TA0028": "Mobile Persistence",
+    "TA0029": "Mobile Privilege Escalation",
+    "TA0030": "Mobile Defense Evasion",
+    "TA0031": "Mobile Credential Access",
+    "TA0032": "Mobile Discovery",
+    "TA0033": "Mobile Lateral Movement",
+    "TA0034": "Mobile Impact",
+    "TA0035": "Mobile Collection",
+    "TA0036": "Mobile Command and Control",
+    "TA0037": "Mobile Exfiltration",
+    "TA0038": "Mobile Network Effects",
+    "TA0039": "Mobile Remote Service Effects",
+    "TA0041": "Mobile Execution",
+    # ICS
+    "TA0100": "ICS Collection",
+    "TA0101": "ICS Command and Control",
+    "TA0102": "ICS Discovery",
+    "TA0103": "ICS Evasion",
+    "TA0104": "ICS Execution",
+    "TA0105": "ICS Impact",
+    "TA0106": "ICS Impair Process Control",
+    "TA0107": "ICS Inhibit Response Function",
+    "TA0108": "ICS Initial Access",
+    "TA0109": "ICS Lateral Movement",
+    "TA0110": "ICS Persistence",
+    "TA0111": "ICS Privilege Escalation",
 }
 
 

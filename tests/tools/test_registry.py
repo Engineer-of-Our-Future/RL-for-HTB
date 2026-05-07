@@ -484,8 +484,10 @@ def test_tools_for_tactic_groups_correctly():
 def test_tools_for_matrix_includes_enterprise():
     vocab = load_registry()
     ent_tools = vocab.tools_for_matrix("enterprise")
-    # All starter tools should be in Enterprise.
-    assert len(ent_tools) == vocab.n_tools
+    # The Enterprise pool should be the dominant matrix, but with mobile-only
+    # / ICS-only YAMLs landed it's no longer == vocab.n_tools.
+    assert len(ent_tools) >= 50
+    assert len(ent_tools) <= vocab.n_tools
 
 
 def test_tools_for_matrix_accepts_enum_value():
@@ -504,14 +506,16 @@ def test_tools_for_unknown_matrix_raises():
 def test_coverage_summary_shape_and_counts():
     vocab = load_registry()
     summary = vocab.coverage_summary()
-    # Always reports all three matrices, even those with zero tools.
+    # Always reports all three matrices.
     assert set(summary.keys()) == {"enterprise", "mobile", "ics"}
-    # Enterprise has all our starter tools.
-    assert summary["enterprise"]["tools"] == vocab.n_tools
+    # Enterprise still dominates and covers Reconnaissance.
+    assert summary["enterprise"]["tools"] >= 50
     assert "TA0043" in summary["enterprise"]["tactics"]
-    # Mobile is empty in the starter set; field exists with zero count.
-    assert summary["mobile"]["tools"] == 0
-    assert summary["mobile"]["tactics"] == {}
+    # Mobile + ICS now have at least the starter sets we shipped.
+    assert summary["mobile"]["tools"] >= 4
+    assert summary["ics"]["tools"] >= 5
+    # ICS Discovery (TA0102) covered by the new ics_basic registry.
+    assert "TA0102" in summary["ics"]["tactics"]
 
 
 def test_some_tools_are_dual_matrix_enterprise_and_ics():

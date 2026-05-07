@@ -1,0 +1,98 @@
+# ICS-matrix starter tools (PLAN.md Phase 16 prep).
+#
+# These run against the local OpenPLC / ConPot lab on the dedicated
+# 192.168.95.0/24 subnet. The IP allowlist in configs/env/ics.yaml is what
+# physically prevents these from reaching anything outside the lab.
+
+tools:
+  - name: plcscan_target
+    category: recon
+    description: Probe a target for known PLC services (Modbus, S7, EtherNet/IP, etc.).
+    command_template: "plcscan {ip}"
+    slots:
+      - { name: ip, type: ip, description: PLC target IP }
+    runtime_cap_seconds: 120
+    output_parser_id: lines
+    attack:
+      matrices: [ics]
+      tactics: [TA0102]
+      techniques: [T0840, T0846]
+    example_invocation: { ip: 192.168.95.10 }
+    example_output: |
+      192.168.95.10:502  Open  Modbus     OpenPLC v3
+      192.168.95.10:102  Open  S7         Siemens S7-300
+
+  - name: modbus_read_holding
+    category: post-exploit
+    description: Read a contiguous block of holding registers from a Modbus TCP slave.
+    command_template: "mbpoll -t 4:hex -r {start_addr} -c {count} {ip}"
+    slots:
+      - { name: ip, type: ip, description: PLC target }
+      - { name: start_addr, type: int, description: register address, min: 1, max: 65535 }
+      - { name: count, type: int, description: how many registers, min: 1, max: 125, default: 10 }
+    runtime_cap_seconds: 30
+    output_parser_id: lines
+    attack:
+      matrices: [ics]
+      tactics: [TA0100]
+      techniques: [T0801, T0846]
+    example_invocation: { ip: 192.168.95.10, start_addr: 1, count: 10 }
+    example_output: |
+      [1]: 0x0042
+      [2]: 0x0001
+
+  - name: modbus_write_coil
+    category: exploit
+    description: Write a single coil on a Modbus TCP slave (Impair Process Control).
+    command_template: "mbpoll -t 0 -r {coil_addr} {ip} {coil_value}"
+    slots:
+      - { name: ip, type: ip, description: PLC target }
+      - { name: coil_addr, type: int, description: coil number, min: 1, max: 65535 }
+      - name: coil_value
+        type: enum
+        description: 0=off, 1=on
+        values: ["0", "1"]
+        default: "1"
+    runtime_cap_seconds: 30
+    output_parser_id: raw
+    requires_target_in_allowlist: true
+    attack:
+      matrices: [ics]
+      tactics: [TA0106]
+      techniques: [T0855, T0831]
+    example_invocation: { ip: 192.168.95.10, coil_addr: 5, coil_value: "1" }
+    example_output: "Written 1 reference."
+
+  - name: s7scan_target
+    category: recon
+    description: Enumerate Siemens S7 PLC information.
+    command_template: "python3 -m s7scan -i {ip}"
+    slots:
+      - { name: ip, type: ip, description: S7 PLC target }
+    runtime_cap_seconds: 60
+    output_parser_id: lines
+    attack:
+      matrices: [ics]
+      tactics: [TA0102]
+      techniques: [T0840, T0846]
+    example_invocation: { ip: 192.168.95.10 }
+    example_output: |
+      Module: 6ES7 314-6CG03-0AB0
+      Firmware: V3.3.10
+
+  - name: enip_list_identity
+    category: recon
+    description: Send an EtherNet/IP List Identity request.
+    command_template: "python3 -m cpppo.server.enip.list_identity --address {ip}"
+    slots:
+      - { name: ip, type: ip, description: ENIP host }
+    runtime_cap_seconds: 30
+    output_parser_id: lines
+    attack:
+      matrices: [ics]
+      tactics: [TA0102]
+      techniques: [T0840]
+    example_invocation: { ip: 192.168.95.10 }
+    example_output: |
+      Vendor: 1 (Allen-Bradley)
+      Product Name: 1756-EN2T
