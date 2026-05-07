@@ -263,17 +263,56 @@ def main(argv: list[str] | None = None) -> int:
         print("[run] -> module landing page")
         url = _navigate_and_wait(cdp, module_landing, timeout_s=30.0)
         print(f"[run]   landed at {url}")
-        # Click "Revisit Module" / "Continue" / first section to enter content.
-        cdp.evaluate(
-            "(function(){"
-            "const btns = Array.from(document.querySelectorAll('button, a'));"
-            "const t = btns.find(b => ['Revisit Module', 'Continue', 'Start Module'].includes((b.innerText||'').trim()));"
-            "if (t) { t.click(); return t.innerText.trim(); } return 'no entry button';"
-            "})()"
-        )
-        time.sleep(3)
+        # Enter the module's section view. Try each candidate entry button in
+        # turn (Vuetify often renders multiple variants - hidden mobile / visible
+        # desktop), wait for URL to change to /app/module/<id>/section/<n>. If
+        # none transition, abort the walk loudly.
+        entry_js = """
+        (function(idx){
+            const btns = Array.from(document.querySelectorAll('button, a'));
+            const cands = btns.filter(b => ['Revisit Module','Continue','Start Module','Resume Module']
+                .includes((b.innerText||'').trim()));
+            if (idx >= cands.length) return {clicked:false, count:cands.length};
+            cands[idx].click();
+            return {clicked:true, text:cands[idx].innerText.trim(), count:cands.length, idx};
+        })
+        """
+        entered = False
+        for try_idx in range(6):
+            res = cdp.evaluate(f"{entry_js}({try_idx})") or {}
+            if not res.get("clicked"):
+                print(f"[run]   no entry-button candidate #{try_idx} (have {res.get('count', 0)}); stopping")
+                break
+            print(f"[run]   clicked entry button #{try_idx} {res.get('text')!r} (of {res.get('count')})")
+            # Poll URL for up to 8s after each click.
+            for _ in range(40):
+                time.sleep(0.2)
+                url = cdp.evaluate("window.location.href") or ""
+                if "/section/" in url:
+                    entered = True
+                    break
+            if entered:
+                break
         url = cdp.evaluate("window.location.href") or ""
         print(f"[run]   in section view: {url}")
+        if not entered:
+            print("[run] WARN: never reached a /section/ URL; module may not be unlocked")
+        else:
+            # Wait for the section view to actually hydrate: poll until either
+            # a "Section X / Y" badge or a non-module-title h1 appears. Vuetify
+            # SPA transitions can leave the prior page's DOM around for a beat.
+            for _ in range(40):
+                ready = cdp.evaluate(
+                    "(function(){"
+                    "const t=document.body.innerText||'';"
+                    "if (/Section\\s+\\d+\\s*\\/\\s*\\d+/.test(t)) return true;"
+                    "return false;"
+                    "})()"
+                )
+                if ready:
+                    break
+                time.sleep(0.3)
+            time.sleep(1.0)
 
         for hop in range(args.max_sections):
             scraped = _scrape_section(cdp)
