@@ -1,0 +1,16 @@
+# Override file for HTB Academy DOM selectors.
+#
+# The Playwright session in src/htbrl/academy/playwright_session.py ships
+# with a baked-in default selector set (_DEFAULT_SELECTORS). Drop overrides
+# here to update selectors without touching Python.
+#
+# Each top-level key matches a screen / page; sub-keys are stable role names.
+# Anything you DON'T override falls through to the baked-in default.
+
+login: {}
+
+modules_list: {}
+
+module_page: {}
+
+progress: {}

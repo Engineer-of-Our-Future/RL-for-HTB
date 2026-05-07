@@ -1,24 +1,28 @@
-"""Heuristic question answerer.
+"""Heuristic question answerer (theory-aware).
+
+The user pointed out the right framing: each academy section gives the model
+*theory* first, then asks questions whose answers are usually directly stated
+in that theory. So the answerer's job is reading-comprehension on the section
+body, not generic knowledge.
 
 We do NOT use an LLM. Each question routes to a handler based on its
-``QuestionType``:
+``QuestionType`` plus a small set of pattern-matched sub-handlers:
 
-- ``MULTIPLE_CHOICE`` -> match the prompt's keywords against the option strings,
-  pick the closest.
-- ``TEXT`` -> regex/keyword extraction from the section's body text + code blocks
-  (the academy's text usually directly contains the answer).
-- ``FLAG`` -> run the section's most-relevant code block in the sandbox SSH and
-  parse the output for a flag-shaped string.
-- ``UNSUPPORTED`` -> skip with a manual-fallback recommendation.
+- **Acronym questions** (``"What does the acronym X stand for"``) - look for
+  X expanded in the body in the canonical patterns ``"X (Y)"``, ``"X = Y"``,
+  ``"X - Y"``, ``"X stands for Y"``, ``"Y (X)"``.
+- **Inline-code preference** - when the answer is a single token, prefer the
+  contents of any inline ``<code>...</code>`` span over guessing a tail of a
+  sentence. The screenshot's "{up-to-date}" highlight is exactly this case.
+- **MC questions** - Jaccard token overlap between option text and section body.
+- **Number-counting questions** (``"How many X..."``) - count bullet-list
+  items or pattern matches in the body.
+- **FLAG questions** - run the section's most relevant code block in the
+  sandbox SSH and parse the output for a flag-shaped string.
 
-Every answer carries a ``confidence`` and a ``rationale`` so the orchestrator
-can decide whether to actually submit. The default policy:
-
-  - confidence >= 0.7 and study_only=False  ->  submit
-  - else                                    ->  log to demo, do not submit
-
-Answers are also passed verbatim into the demonstration trajectory so BC
-pretraining can learn the agent's reasoning trace.
+Below ``manual_review_threshold`` (set on the orchestrator) we hand off to the
+operator rather than guess. Every answer carries ``confidence`` and a short
+``rationale`` so the demo trail is auditable.
 """
 
 from __future__ import annotations
@@ -39,6 +43,16 @@ from htbrl.academy.page_models import (
 
 _FLAG_LINE_RE = re.compile(r"^[a-zA-Z0-9_\-]{8,64}$", re.MULTILINE)
 _HTB_FLAG_RE = re.compile(r"HTB\{[^}]+\}")
+# Capture the full noun phrase between "the acronym" / "what does" and "stand for";
+# we then extract the actual acronym (token with >=2 uppercase letters in a row)
+# from inside it. Handles both "what does PAM stand for" and "what does the
+# acronym Linux PAM stand for" - the screenshot's exact phrasing.
+_ACRONYM_PROMPT_RE = re.compile(
+    r"\bwhat\s+does\s+(?:the\s+acronym\s+)?(?P<phrase>[\w\s\-]{1,60}?)\s+stand\s+for\b",
+    re.IGNORECASE,
+)
+_ACRONYM_TOKEN_RE = re.compile(r"\b([A-Z][A-Z0-9]{1,15})\b")
+_HOWMANY_PROMPT_RE = re.compile(r"\bhow\s+many\b", re.IGNORECASE)
 
 
 def _tokenize(s: str) -> set[str]:
@@ -50,6 +64,71 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
+
+def _expand_acronym(acronym: str, body: str) -> str | None:
+    """Look for ``ACRO (Words ...)`` or ``Words ... (ACRO)`` etc. in body.
+
+    Returns the expansion text if found, else None.
+    """
+    a = re.escape(acronym)
+    # 1. "PAM (Pluggable Authentication Modules)"
+    m = re.search(rf"\b{a}\s*\(([^)]{{3,80}}?)\)", body)
+    if m:
+        cand = m.group(1).strip()
+        if _looks_like_expansion(cand, acronym):
+            return cand
+    # 2. "Pluggable Authentication Modules (PAM)"
+    m = re.search(rf"([A-Z][A-Za-z\s\-]{{3,80}}?)\s*\(\s*{a}\s*\)", body)
+    if m:
+        cand = m.group(1).strip()
+        if _looks_like_expansion(cand, acronym):
+            return cand
+    # 3. "PAM stands for Pluggable Authentication Modules"
+    m = re.search(
+        rf"\b{a}\s+(?:stands?\s+for|is\s+short\s+for)\s+([^.,;\n]{{3,80}})",
+        body, re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip().rstrip(".")
+    # 4. "PAM = Pluggable Authentication Modules" / "PAM - Pluggable ..."
+    m = re.search(rf"\b{a}\s*[-=]\s*([A-Z][^,.;\n]{{3,80}})", body)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _looks_like_expansion(candidate: str, acronym: str) -> bool:
+    """Sanity check: candidate's leading initials must roughly match the acronym.
+
+    This filters out spurious parentheses like "PAM (which is on Linux)".
+    """
+    words = re.findall(r"[A-Za-z][A-Za-z\-]{1,30}", candidate)
+    if not words:
+        return False
+    # Minimum: at least half of the acronym's letters should match leading
+    # letters of words in the candidate.
+    initials = "".join(w[0] for w in words).upper()
+    matched = sum(1 for c in acronym.upper() if c in initials)
+    return matched >= max(1, len(acronym) // 2)
+
+
+def _count_pattern_matches(prompt: str, section: AcademySection) -> int | None:
+    """Return a count if the body has a list / pattern that the prompt hints at.
+
+    Trivial heuristic: if the prompt has 'how many <noun>' and the body has
+    bullet lists, the count is the longest bullet list's length.
+    """
+    if not section.bullet_lists:
+        return None
+    # Prefer the bullet list whose tokens overlap the prompt the most.
+    p = _tokenize(prompt)
+    scored = [
+        (sum(_jaccard(p, _tokenize(item)) for item in lst), len(lst), lst)
+        for lst in section.bullet_lists
+    ]
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return scored[0][1] if scored else None
 
 
 # Sandbox runner type: takes a command, returns its stdout text.
@@ -110,11 +189,42 @@ class HeuristicAnswerer:
         )
 
     def _answer_text(self, question: AcademyQuestion, section: AcademySection) -> AcademyAnswer:
-        # Strategy: scan the body text for sentences whose tokens overlap
-        # heavily with the question, then return the most "answer-shaped"
-        # short noun phrase from them. We pick the SHORTEST candidate so we
-        # don't paste a paragraph as the answer.
-        prompt_tokens = _tokenize(question.prompt)
+        prompt = question.prompt
+
+        # 1. Acronym pattern -> direct expansion lookup. We capture the noun
+        #    phrase ("Linux PAM") and pull the actual acronym from inside it.
+        m = _ACRONYM_PROMPT_RE.search(prompt)
+        if m:
+            phrase = m.group("phrase") or ""
+            acro_m = _ACRONYM_TOKEN_RE.search(phrase)
+            if acro_m:
+                acro = acro_m.group(1).upper()
+                expansion = _expand_acronym(acro, section.body_text)
+                if expansion:
+                    return AcademyAnswer(
+                        question_id=question.id,
+                        answer_text=expansion,
+                        confidence=0.85,
+                        method="acronym_expansion",
+                        rationale=f"found expansion of {acro!r} (from prompt phrase {phrase!r}) in section body",
+                    )
+
+        # 2. "How many ..." -> count bullet-list items.
+        if _HOWMANY_PROMPT_RE.search(prompt):
+            count = _count_pattern_matches(prompt, section)
+            if count is not None:
+                return AcademyAnswer(
+                    question_id=question.id,
+                    answer_text=str(count),
+                    confidence=0.6,
+                    method="howmany_count",
+                    rationale=f"counted {count} items in best-matching bullet list",
+                )
+
+        # 3. Body-text scan -> sentence overlap, with strong preference for
+        #    inline-code spans inside the matched sentence (academy questions
+        #    typically expect the literal token shown in `<code>`).
+        prompt_tokens = _tokenize(prompt)
         sentences = re.split(r"(?<=[.!?])\s+", section.body_text)
         candidates: list[tuple[float, str]] = []
         for s in sentences:
@@ -123,38 +233,63 @@ class HeuristicAnswerer:
             if score > 0:
                 candidates.append((score, s.strip()))
 
-        if not candidates:
+        if candidates:
+            candidates.sort(key=lambda x: (-x[0], len(x[1])))
+            best_score, best_sentence = candidates[0]
+            # Prefer inline code spans that happen to appear in the matched
+            # sentence (or the section as a whole if the sentence has none).
+            inline_in_sentence = [
+                c for c in section.inline_code if c and c in best_sentence
+            ]
+            if inline_in_sentence:
+                return AcademyAnswer(
+                    question_id=question.id,
+                    answer_text=inline_in_sentence[0],
+                    confidence=min(0.8, best_score + 0.3),
+                    method="inline_code_in_match",
+                    rationale=(
+                        f"best sentence (jaccard={best_score:.2f}) contains inline "
+                        f"code span -> using it as the literal answer"
+                    ),
+                )
+            # Fall back to a quoted/back-ticked span anywhere in the sentence,
+            # else last 3 words.
+            mq = re.search(r'"([^"]{2,80})"', best_sentence) or re.search(
+                r"`([^`]{2,80})`", best_sentence
+            )
+            if mq:
+                answer = mq.group(1)
+            else:
+                words = best_sentence.split()
+                answer = " ".join(words[-3:]) if words else ""
             return AcademyAnswer(
                 question_id=question.id,
-                answer_text="",
-                confidence=0.0,
-                method="skipped",
-                rationale="no sentence in section overlapped with question tokens",
+                answer_text=answer,
+                confidence=min(0.5, best_score),
+                method="heuristic_text",
+                rationale=(
+                    f"matched sentence with jaccard={best_score:.2f}; "
+                    f"extracted tail/quoted span"
+                ),
             )
 
-        candidates.sort(key=lambda x: (-x[0], len(x[1])))
-        best_score, best_sentence = candidates[0]
-        # Try to extract a short tail (last token / quoted span).
-        match = re.search(r'"([^"]{2,80})"', best_sentence) or re.search(
-            r"`([^`]{2,80})`", best_sentence
-        )
-        if match:
-            answer = match.group(1)
-        else:
-            # Fall back to the last 1-3 words of the matched sentence.
-            words = best_sentence.split()
-            answer = " ".join(words[-3:]) if words else ""
+        # 4. As a last resort, if the section has only one inline code span,
+        #    use it (the screenshot's "up-to-date" case).
+        if len(section.inline_code) == 1:
+            return AcademyAnswer(
+                question_id=question.id,
+                answer_text=section.inline_code[0],
+                confidence=0.4,
+                method="lone_inline_code",
+                rationale="section had a single inline code span; used as answer fallback",
+            )
 
-        confidence = min(0.6, best_score)  # text answers are inherently uncertain
         return AcademyAnswer(
             question_id=question.id,
-            answer_text=answer,
-            confidence=confidence,
-            method="heuristic_text",
-            rationale=(
-                f"matched sentence with jaccard={best_score:.2f}; "
-                f"extracted tail/quoted span"
-            ),
+            answer_text="",
+            confidence=0.0,
+            method="skipped",
+            rationale="no overlap, no acronym, no list, no inline code to lean on",
         )
 
     def _answer_flag(self, question: AcademyQuestion, section: AcademySection) -> AcademyAnswer:

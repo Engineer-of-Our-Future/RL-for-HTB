@@ -257,6 +257,184 @@ def test_answerer_unsupported_returns_skip():
     assert ans.method == "skipped"
 
 
+# ---- theory-aware patterns (modeled directly on the user's screenshots) ----
+
+
+def test_acronym_question_uses_paren_expansion():
+    """Body says 'PAM (Pluggable Authentication Modules)'; question is the canonical
+    'What does the acronym X stand for?' format from the screenshot."""
+    section = AcademySection(
+        id="s", title="VPS Hardening",
+        body_text=(
+            "We can use Linux PAM (Pluggable Authentication Modules) to enforce "
+            "password policy on our VPS. PAM is configured in /etc/pam.d/."
+        ),
+    )
+    q = AcademyQuestion(
+        id="q", prompt="What does the acronym Linux PAM stand for?",
+        type=QuestionType.TEXT,
+    )
+    ans = HeuristicAnswerer().answer(q, section)
+    assert ans.method == "acronym_expansion"
+    assert "Pluggable Authentication Modules" in ans.answer_text
+    assert ans.confidence >= 0.8
+
+
+def test_acronym_question_with_stands_for_phrasing():
+    section = AcademySection(
+        id="s", title="x",
+        body_text="VPN stands for Virtual Private Network. It is used to ...",
+    )
+    q = AcademyQuestion(
+        id="q", prompt="What does VPN stand for?", type=QuestionType.TEXT,
+    )
+    ans = HeuristicAnswerer().answer(q, section)
+    assert "Virtual Private Network" in ans.answer_text
+    assert ans.method == "acronym_expansion"
+
+
+def test_acronym_question_with_reverse_paren_expansion():
+    section = AcademySection(
+        id="s", title="x",
+        body_text="The Pluggable Authentication Modules (PAM) framework ...",
+    )
+    q = AcademyQuestion(
+        id="q", prompt="What does the acronym PAM stand for?",
+        type=QuestionType.TEXT,
+    )
+    ans = HeuristicAnswerer().answer(q, section)
+    assert ans.method == "acronym_expansion"
+    assert "Pluggable Authentication Modules" in ans.answer_text
+
+
+def test_inline_code_in_match_preferred_over_tail():
+    """Screenshot's `up-to-date` case: question matches a sentence that has an
+    inline code span; we should return the code, not the tail of the sentence."""
+    section = AcademySection(
+        id="s", title="x",
+        body_text=(
+            "One of the first steps in hardening our system is updating "
+            "and bringing the system up-to-date."
+        ),
+        inline_code=["up-to-date"],
+    )
+    q = AcademyQuestion(
+        id="q",
+        prompt="What is the term for bringing the system to its latest state?",
+        type=QuestionType.TEXT,
+    )
+    ans = HeuristicAnswerer().answer(q, section)
+    assert ans.answer_text == "up-to-date"
+    assert ans.method == "inline_code_in_match"
+
+
+def test_lone_inline_code_fallback():
+    """When nothing else matches but the section has a single inline-code span."""
+    section = AcademySection(
+        id="s", title="x",
+        body_text="Some text with no overlap at all.",
+        inline_code=["sshd_config"],
+    )
+    q = AcademyQuestion(
+        id="q", prompt="Quantum chromodynamics?", type=QuestionType.TEXT,
+    )
+    ans = HeuristicAnswerer().answer(q, section)
+    assert ans.answer_text == "sshd_config"
+    assert ans.method == "lone_inline_code"
+
+
+def test_howmany_question_counts_bullet_list():
+    """Direct port of the screenshot's bullet list of 10 hardening precautions."""
+    bullets = [
+        "Install Fail2ban",
+        "Working only with SSH keys",
+        "Reduce Idle timeout interval",
+        "Disable passwords",
+        "Disable x11 forwarding",
+        "Use a different port",
+        "Limit users' SSH access",
+        "Disable root logins",
+        "Use SSH proto 2",
+        "Enable 2FA Authentication for SSH",
+    ]
+    section = AcademySection(
+        id="s", title="VPS Hardening",
+        body_text="There are many ways to harden our VPS, including the following:",
+        bullet_lists=[bullets],
+    )
+    q = AcademyQuestion(
+        id="q",
+        prompt="How many SSH hardening precautions does the section list?",
+        type=QuestionType.TEXT,
+    )
+    ans = HeuristicAnswerer().answer(q, section)
+    assert ans.answer_text == str(len(bullets))
+    assert ans.method == "howmany_count"
+
+
+def test_question_carries_reward_metadata():
+    q = AcademyQuestion(
+        id="q1", prompt="?", type=QuestionType.TEXT,
+        cubes_reward=5, hp_reward=20,
+    )
+    assert q.cubes_reward == 5
+    assert q.hp_reward == 20
+
+
+def test_demo_turn_includes_theory_in_obs_text(tmp_path: Path):
+    """auto_demo_writer must put the section's theory in the obs_text so BC
+    learns the read-then-answer pattern."""
+    from htbrl.academy.auto_demo_writer import answer_to_demo_turn
+
+    q = AcademyQuestion(
+        id="q1",
+        prompt="What does the acronym Linux PAM stand for?",
+        type=QuestionType.TEXT,
+        cubes_reward=5, hp_reward=20,
+    )
+    ans = AcademyAnswer(
+        question_id="q1",
+        answer_text="Pluggable Authentication Modules",
+        confidence=0.85,
+        method="acronym_expansion",
+    )
+    turn = answer_to_demo_turn(
+        q, ans, accepted=True,
+        section_title="VPS Hardening",
+        section_body=(
+            "We can use Linux PAM (Pluggable Authentication Modules) to enforce "
+            "password policy on our VPS."
+        ),
+        inline_code=["sshd_config"],
+    )
+    assert "VPS Hardening" in turn.obs_text
+    assert "## Theory" in turn.obs_text
+    assert "Pluggable Authentication Modules" in turn.obs_text
+    assert "## Question" in turn.obs_text
+    # Reward includes the +cubes/+HP bonus for an accepted answer
+    assert turn.reward > 0.5
+
+
+def test_demo_turn_truncates_long_theory():
+    """Cap theory at 4 KB; keep the last 4 KB which is closer to the question."""
+    from htbrl.academy.auto_demo_writer import answer_to_demo_turn
+
+    long_body = "PADDING. " * 800 + "ANSWER_MARKER_AT_END"
+    q = AcademyQuestion(id="q1", prompt="?", type=QuestionType.TEXT)
+    ans = AcademyAnswer(
+        question_id="q1", answer_text="x", confidence=0.5, method="heuristic_text"
+    )
+    turn = answer_to_demo_turn(
+        q, ans, accepted=False,
+        section_title="t", section_body=long_body, inline_code=[],
+    )
+    # The last 4 KB of theory should be present (so the marker we put at the
+    # end survives the truncation).
+    assert "ANSWER_MARKER_AT_END" in turn.obs_text
+    # And the header before truncation should be dropped (we cut from the front).
+    assert turn.obs_text.count("PADDING.") < 800
+
+
 # ---- curriculum -------------------------------------------------------------
 
 

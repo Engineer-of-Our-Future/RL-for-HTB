@@ -32,6 +32,11 @@ class AcademyQuestion:
     # sandbox-cmd template the section authors expect the student to run).
     hints: list[str] = field(default_factory=list)
     points: int = 0
+    # Reward metadata as shown on the academy question card (e.g. green cube
+    # +5 / purple HP +20). Useful for the orchestrator to prioritize
+    # high-value questions and for the demo writer to scale per-turn rewards.
+    cubes_reward: int = 0
+    hp_reward: int = 0
 
     def __post_init__(self) -> None:
         if self.type == QuestionType.MULTIPLE_CHOICE and not self.multiple_choice_options:
@@ -52,7 +57,7 @@ class AcademySandbox:
 
 @dataclass
 class AcademySection:
-    """One numbered subsection inside a module page."""
+    """One numbered subsection inside a module page (e.g. 'Section 11 / 22')."""
 
     id: str
     title: str
@@ -62,6 +67,18 @@ class AcademySection:
     # Fenced code blocks the section author included; used as command hints
     # by the answerer's "run-this-and-paste-output" heuristic.
     code_blocks: list[str] = field(default_factory=list)
+    # Inline `code` spans extracted from the body. Often contain the literal
+    # answer to text questions (e.g. "the {up-to-date} command" -> answer is
+    # "up-to-date"). The HeuristicAnswerer prefers these over arbitrary tails.
+    inline_code: list[str] = field(default_factory=list)
+    # Bulleted lists found in the body, ordered as they appear. The answerer
+    # uses these for "How many X..." / "Which X..." questions.
+    bullet_lists: list[list[str]] = field(default_factory=list)
+    # 1-based section index inside its module ("11 / 22").
+    section_index: int = 0
+    section_total: int = 0
+    # +HP reward shown on the section's "Mark Complete & Next" button.
+    hp_reward: int = 0
 
 
 @dataclass

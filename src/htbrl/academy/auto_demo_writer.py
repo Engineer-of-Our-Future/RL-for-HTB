@@ -37,22 +37,39 @@ def answer_to_demo_turn(
     answer: AcademyAnswer,
     accepted: bool,
     section_title: str = "",
+    section_body: str = "",
+    inline_code: list[str] | None = None,
 ) -> DemoTurn:
     """Render one Q+A as a DemoTurn the BC trainer can learn from.
+
+    Crucially, the section's *theory text* travels with the question in
+    ``obs_text`` so the policy learns the reading-comprehension mapping
+    (theory -> answer), which is the user's stated goal for the academy
+    track. We cap the theory at 4 KB to keep token counts bounded; if the
+    section is longer, we keep the last 4 KB which is usually closer to the
+    questions on the page.
 
     The 'tool' here is a synthetic 'academy_answer' marker since academy
     answers don't map cleanly to the registry's pentest tools. BC training
     can choose to ignore academy_answer turns or treat them as a separate
     head-target via a small extension to the action vocab.
     """
-    obs_text = (
-        f"[academy:{section_title}] {question.prompt}"
-        if section_title else f"[academy] {question.prompt}"
-    )
+    parts: list[str] = []
+    parts.append(f"[academy:{section_title}]" if section_title else "[academy]")
+    if section_body:
+        body = section_body if len(section_body) <= 4096 else section_body[-4096:]
+        parts.append("## Theory\n" + body)
+    if inline_code:
+        parts.append("## Inline code: " + " | ".join(inline_code[:16]))
+    parts.append("## Question\n" + question.prompt)
     if question.multiple_choice_options:
-        obs_text += "\nOptions: " + " | ".join(question.multiple_choice_options)
+        parts.append("Options: " + " | ".join(question.multiple_choice_options))
+    obs_text = "\n\n".join(parts)
 
     reward = _reward_for_answer(answer, accepted, question.points)
+    # Per-question reward bonus reflects the academy's own +cubes / +HP signal.
+    if accepted and (question.cubes_reward or question.hp_reward):
+        reward += 0.01 * question.cubes_reward + 0.001 * question.hp_reward
     return DemoTurn(
         obs_text=obs_text,
         action_tool_id=-1,        # synthetic; not in the registry
@@ -61,6 +78,8 @@ def answer_to_demo_turn(
             "answer": answer.answer_text,
             "method": answer.method,
             "confidence": answer.confidence,
+            "cubes_reward": question.cubes_reward,
+            "hp_reward": question.hp_reward,
         },
         action_render=f"academy_answer({answer.method}): {answer.answer_text!r}",
         reward=reward,
@@ -100,7 +119,11 @@ def session_to_demonstration(
 ) -> Demonstration:
     """Roll a list of submissions into one Demonstration."""
     turns: list[DemoTurn] = []
-    questions_by_id = {q.id: (q, s.title) for s in module.sections for q in s.questions}
+    # We index by question id to (question, owning section) so the demo turn
+    # can carry the section's theory + inline code alongside the prompt.
+    questions_by_id = {
+        q.id: (q, s) for s in module.sections for q in s.questions
+    }
 
     foothold = False
     user_flag = False
@@ -112,12 +135,17 @@ def session_to_demonstration(
         q_info = questions_by_id.get(ans.question_id)
         if q_info is None:
             continue
-        question, section_title = q_info
+        question, section = q_info
         # Sandbox command turn first (the 'how'), then the answer turn (the 'what').
         cmd_turn = sandbox_cmd_to_demo_turn(ans, accepted)
         if cmd_turn is not None:
             turns.append(cmd_turn)
-        turns.append(answer_to_demo_turn(question, ans, accepted, section_title))
+        turns.append(answer_to_demo_turn(
+            question, ans, accepted,
+            section_title=section.title,
+            section_body=section.body_text,
+            inline_code=section.inline_code,
+        ))
         if accepted:
             foothold = True
             if question.type.value == "flag":
