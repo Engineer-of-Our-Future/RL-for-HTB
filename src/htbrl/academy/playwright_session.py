@@ -154,6 +154,12 @@ class PlaywrightConfig:
     user_agent: str | None = None
     nav_timeout_ms: int = 30_000
     selector_timeout_ms: int = 8_000
+    # CDP attach mode: connect to a Chrome the user launched themselves with
+    # --remote-debugging-port=9222. Set to e.g. "http://127.0.0.1:9222" to
+    # bypass Cloudflare/Google bot detection entirely - the browser session
+    # is authenticated by the human, we just drive the already-authed tab.
+    # When set, headless / cookie_path / user_agent are ignored.
+    cdp_endpoint: str | None = None
 
 
 class PlaywrightAcademySession(AcademySession):
@@ -207,6 +213,27 @@ class PlaywrightAcademySession(AcademySession):
         from playwright.sync_api import sync_playwright
 
         self._pw = sync_playwright().start()
+        if self.cfg.cdp_endpoint:
+            # Attach to user-launched Chrome (no automation markers, no
+            # Cloudflare / Google bot detection). The user did the auth.
+            log.info("attaching to user-launched Chrome at %s", self.cfg.cdp_endpoint)
+            self._browser = self._pw.chromium.connect_over_cdp(self.cfg.cdp_endpoint)
+            if not self._browser.contexts:
+                raise RuntimeError(
+                    f"connected to {self.cfg.cdp_endpoint} but the browser has no "
+                    f"contexts. Open a tab in Chrome first."
+                )
+            self._ctx = self._browser.contexts[0]
+            # Find an existing academy page or create one.
+            self._page = next(
+                (p for p in self._ctx.pages if "hackthebox.com" in (p.url or "")),
+                None,
+            )
+            if self._page is None:
+                self._page = self._ctx.new_page()
+            self._logged_in = True  # human did the login
+            return
+
         self._browser = self._pw.chromium.launch(
             headless=self.cfg.headless, slow_mo=self.cfg.slow_mo_ms
         )
@@ -224,6 +251,13 @@ class PlaywrightAcademySession(AcademySession):
         self._ensure_browser()
         page = self._page
         assert page is not None
+
+        # CDP attach: the user did the login already. We just confirm we're on
+        # an academy page and move on.
+        if self.cfg.cdp_endpoint:
+            log.info("CDP attach: skipping login (user already authenticated)")
+            self._logged_in = True
+            return
 
         # Try cookie-only login first.
         page.goto(self._sel["progress"]["url"])
