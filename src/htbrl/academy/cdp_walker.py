@@ -110,11 +110,37 @@ SECTION_SCRAPER_JS = r"""
 """
 
 
-_NEXT_BUTTON_JS = """
+_NEXT_BUTTON_JS = r"""
 (function() {
-  const btns = Array.from(document.querySelectorAll('button'));
-  const next = btns.find(b => (b.innerText || '').trim() === 'Next' && !b.disabled);
-  if (next) { next.click(); return 'clicked Next'; }
+  // The academy renders three variants of the section-advance button
+  // depending on completion state:
+  //   "Next"                   - section not marked complete (we just
+  //                              advance without crediting completion)
+  //   "Complete & Next" or
+  //   "Mark Complete & Next"   - all section questions answered: this
+  //                              button advances AND marks the section
+  //                              complete (which awards section HP/cubes
+  //                              + counts toward module completion).
+  //   "Finish" or
+  //   "Complete Module"        - last section: marks the entire module
+  //                              complete (awards module-completion
+  //                              bonus cubes_awarded_upon_completion).
+  // Prefer the strongest variant available so we maximize cube earnings.
+  const btns = Array.from(document.querySelectorAll('button')).filter(b => !b.disabled);
+  const byPriority = [
+    /^Finish$/i,
+    /^Complete\s+Module$/i,
+    /^(Mark\s+)?Complete\s*&\s*Next$/i,
+    /^(Mark\s+)?Complete\s+and\s+Next$/i,
+    /^Next$/i,
+  ];
+  for (const re of byPriority) {
+    const cand = btns.find(b => re.test((b.innerText||'').trim()));
+    if (cand) {
+      cand.click();
+      return 'clicked ' + (cand.innerText||'').trim();
+    }
+  }
   return 'no Next button';
 })()
 """
@@ -401,8 +427,16 @@ def scrape_section(cdp: CDPClient) -> dict:
 
 
 def click_next(cdp: CDPClient) -> bool:
-    """Click the section's Next button. Returns True iff a Next button was clicked."""
-    return cdp.evaluate(_NEXT_BUTTON_JS) == "clicked Next"
+    """Click the section's section-advance button.
+
+    Prefers the strongest variant available (``Finish`` >
+    ``Complete Module`` > ``Complete & Next`` > ``Next``) so the academy
+    gets to award completion bonuses when we've actually answered the
+    section's questions. Returns True iff *any* advance button was
+    clicked.
+    """
+    msg = cdp.evaluate(_NEXT_BUTTON_JS) or ""
+    return msg.startswith("clicked")
 
 
 def click_next_and_advance(cdp: CDPClient, *, current_idx: int = 0,
