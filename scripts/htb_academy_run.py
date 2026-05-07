@@ -41,6 +41,10 @@ from htbrl.data.demo_dataset import save_demonstration
 
 
 # JavaScript that scrapes a single rendered section into a structured dict.
+# Question-prompt extraction was rewritten to match the actual academy DOM
+# (each question is an <li class="mb-4"><div class="collapse...">). The
+# expanded card's full text is "Question N\n+M\n+K\n<actual prompt>\nSubmit
+# \nHint" - we strip the Question/reward/button noise to leave the prompt.
 _SECTION_SCRAPER_JS = r"""
 (function() {
   function txt(el) { return el ? (el.innerText || el.textContent || '').trim() : ''; }
@@ -59,21 +63,43 @@ _SECTION_SCRAPER_JS = r"""
   const bullet_lists = Array.from(document.querySelectorAll('ul')).map(ul =>
     Array.from(ul.querySelectorAll('li')).map(li => txt(li)).filter(s => s)
   ).filter(l => l.length > 0);
+
+  // Question extraction: walk up from each answer input to its enclosing
+  // collapse-card, then take the card's innerText and strip the boilerplate.
+  function extractQuestion(inp, idx) {
+    let card = inp;
+    for (let i = 0; i < 8 && card; i++) {
+      if ((card.className || '').includes('collapse')) break;
+      card = card.parentElement;
+    }
+    if (!card) card = inp.closest('li') || inp.parentElement;
+    const cardText = txt(card);
+    // Capture "+N" reward markers (cubes have a green-cube icon, HP has purple).
+    // The DOM only gives us the magnitudes; we can't easily distinguish which is
+    // cubes vs HP without color/icon inspection, so we record both.
+    const rewardMatches = cardText.match(/\+(\d+)/g) || [];
+    const rewards = rewardMatches.map(s => parseInt(s.replace('+',''), 10));
+    // Strip noise: lines containing "Question N", standalone "+N", "Submit",
+    // "Hint", "Show Hint", "Show Answer". Keep the prompt body.
+    const lines = cardText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    const promptLines = lines.filter(l => {
+      if (/^Question\s+\d+$/i.test(l)) return false;
+      if (/^\+\d+$/.test(l)) return false;
+      if (/^Submit$/i.test(l)) return false;
+      if (/^(Show\s+)?Hint$/i.test(l)) return false;
+      if (/^(Show\s+)?Answer$/i.test(l)) return false;
+      return true;
+    });
+    const prompt = promptLines.join(' ').slice(0, 800);
+    // Detect any code blocks INSIDE the question card (sandbox SSH creds, etc.)
+    const cardCodeBlocks = Array.from(card.querySelectorAll('pre code, pre'))
+      .map(c => txt(c)).filter(s => s.length > 0);
+    return { idx, prompt, placeholder: inp.placeholder, name: inp.name, id: inp.id,
+             reward_markers: rewards, card_code_blocks: cardCodeBlocks };
+  }
+
   const inputs = Array.from(document.querySelectorAll('input[placeholder*="answer" i], input[placeholder*="Write your"]'));
-  const questions = inputs.map((inp, i) => {
-    let prompt = '';
-    let walker = inp.parentElement;
-    for (let depth = 0; depth < 6 && walker; depth++) {
-      const heading = walker.querySelector('h1, h2, h3, h4, .question-prompt, [class*="question"]');
-      if (heading && txt(heading)) { prompt = txt(heading); break; }
-      walker = walker.parentElement;
-    }
-    if (!prompt) {
-      let p = inp.previousElementSibling;
-      while (p && !prompt) { prompt = txt(p); p = p.previousElementSibling; }
-    }
-    return { idx: i, prompt, placeholder: inp.placeholder, name: inp.name, id: inp.id };
-  });
+  const questions = inputs.map(extractQuestion);
   return { sec_idx, sec_total, title, body_text, inline, code_blocks, bullet_lists, questions, url: window.location.href };
 })()
 """
@@ -170,10 +196,26 @@ def _build_section(scraped: dict) -> AcademySection:
     questions: list[AcademyQuestion] = []
     for i, q in enumerate(scraped.get("questions") or []):
         prompt = (q.get("prompt") or "").strip() or f"Question {i+1}"
+        rewards = q.get("reward_markers") or []
+        # If two reward magnitudes were detected, the smaller is cubes and the
+        # larger is HP (academy convention: cubes are 1-5, HP is 10-50).
+        cubes_reward, hp_reward = 0, 0
+        if len(rewards) == 1:
+            hp_reward = int(rewards[0])
+        elif len(rewards) >= 2:
+            sorted_r = sorted(rewards)
+            cubes_reward, hp_reward = sorted_r[0], sorted_r[-1]
+        # Card-internal code blocks often contain the SSH sandbox credentials
+        # the question expects you to run commands against; merge them with the
+        # section's other hints so the answerer can find them.
+        question_hints = q.get("card_code_blocks") or []
         questions.append(AcademyQuestion(
             id=f"q-{scraped.get('sec_idx', 0)}-{i}",
             prompt=prompt,
             type=QuestionType.TEXT,  # academy text inputs are free-text by default
+            cubes_reward=cubes_reward,
+            hp_reward=hp_reward,
+            hints=question_hints,
         ))
     return AcademySection(
         id=f"sec-{scraped.get('sec_idx', 0)}",
