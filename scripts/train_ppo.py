@@ -48,6 +48,13 @@ from htbrl.env.stub_env import StubPentestEnv
 from htbrl.model.policy import ActorCriticPolicy, PolicyConfig
 from htbrl.tokenizer.bpe import ByteLevelBPE
 from htbrl.tools.loader import load_registry
+from htbrl.utils.optim_helpers import (
+    apply_grad_checkpointing_to_blocks,
+    build_optimizer,
+    log_vram_state,
+    maybe_compile,
+    reset_peak_vram,
+)
 
 
 def _build_argparser() -> argparse.ArgumentParser:
@@ -102,6 +109,18 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--output", type=Path, required=True, help="run dir for checkpoints + log.jsonl")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed", type=int, default=0)
+
+    # Phase 10 hardware optimizations (off by default; turn on when VRAM-bound).
+    p.add_argument("--compile", action="store_true",
+                   help="apply torch.compile to the policy (1.3-1.8x on Ampere)")
+    p.add_argument("--compile-mode", default="default",
+                   choices=["default", "reduce-overhead", "max-autotune"])
+    p.add_argument("--grad-checkpointing", action="store_true",
+                   help="wrap each transformer block in torch.utils.checkpoint")
+    p.add_argument("--use-8bit-adamw", action="store_true",
+                   help="use bitsandbytes AdamW8bit if available (saves ~1.5 GB at 100M params)")
+    p.add_argument("--vram-log-every", type=int, default=10,
+                   help="log VRAM peak/current every N rollouts; 0 disables")
 
     return p
 
@@ -172,8 +191,21 @@ def main(argv: list[str] | None = None) -> int:
         slot_vocab_sizes=(),
     )
     policy = ActorCriticPolicy(cfg).to(args.device)
-    optimizer = torch.optim.AdamW(
-        policy.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    if args.grad_checkpointing:
+        n = apply_grad_checkpointing_to_blocks(policy.encoder.blocks)
+        print(f"[train] gradient checkpointing on {n} transformer blocks")
+    if args.compile:
+        policy = maybe_compile(policy, mode=args.compile_mode, enable=True)
+        print(f"[train] torch.compile mode={args.compile_mode}")
+
+    # Build the optimizer from the un-compiled module's parameters so
+    # state-dict round-trips work without _orig_mod gymnastics later.
+    pol_params = getattr(policy, "_orig_mod", policy).parameters()
+    optimizer = build_optimizer(
+        pol_params,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        use_8bit=args.use_8bit_adamw,
     )
 
     envs = _build_env_factory(args, vocab)
@@ -196,8 +228,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.kl_init_coef > 0 else None
     )
 
-    print(f"[train] policy params = {policy.n_parameters():,}")
+    pol_for_diag = getattr(policy, "_orig_mod", policy)
+    print(f"[train] policy params = {pol_for_diag.n_parameters():,}")
     print(f"[train] vocab tools   = {vocab.n_tools}")
+    print(f"[train] hardware opts : compile={args.compile} "
+          f"grad_ckpt={args.grad_checkpointing} 8bit_adamw={args.use_8bit_adamw}")
+    reset_peak_vram()
     print(f"[train] env_type      = {args.env_type}")
     print(f"[train] device        = {args.device}")
 
@@ -285,11 +321,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"({t_rollout:.1f}s+{t_update:.1f}s)"
             )
 
+        if args.vram_log_every and (rollout_idx + 1) % args.vram_log_every == 0:
+            log_vram_state(label=f"rollout {rollout_idx+1}")
+
         if (rollout_idx + 1) % args.checkpoint_every == 0:
             ckpt = args.output / f"ckpt-{rollout_idx+1:05d}.pt"
+            sd_module = getattr(policy, "_orig_mod", policy)
             torch.save(
                 {
-                    "model": policy.state_dict(),
+                    "model": sd_module.state_dict(),
                     "config": asdict(cfg),
                     "rollout_idx": rollout_idx + 1,
                     "env_steps": total_env_steps,
@@ -301,9 +341,10 @@ def main(argv: list[str] | None = None) -> int:
 
     # Final checkpoint
     final = args.output / "ckpt-final.pt"
+    sd_module = getattr(policy, "_orig_mod", policy)
     torch.save(
         {
-            "model": policy.state_dict(),
+            "model": sd_module.state_dict(),
             "config": asdict(cfg),
             "rollout_idx": args.total_rollouts,
             "env_steps": total_env_steps,
@@ -312,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
         final,
     )
     print(f"[train] done. final = {final}")
+    log_vram_state(label="final")
     logfile.close()
     for env in envs:
         env.close()
