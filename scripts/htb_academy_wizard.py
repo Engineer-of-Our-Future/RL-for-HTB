@@ -55,6 +55,7 @@ from htbrl.academy.cdp_walker import (
     open_cdp,
     parse_cheatsheet_markdown,
     read_cube_balance,
+    read_hint_for_question,
     read_target_info,
     scrape_section,
     spawn_target,
@@ -224,6 +225,17 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="seconds to wait for the academy to provision the target IP "
              "after clicking Spawn (default 120).",
     )
+    p.add_argument(
+        "--use-hints", action="store_true", default=True,
+        help="click the per-question Hint button when present and feed the "
+             "revealed text into the question's hint context (the answerer "
+             "uses hints as additional reading-comprehension signal). "
+             "Default ON.",
+    )
+    p.add_argument(
+        "--no-hints", dest="use_hints", action="store_false",
+        help="opt out of the auto-Hint behavior",
+    )
     return p
 
 
@@ -355,6 +367,16 @@ def main(argv: list[str] | None = None) -> int:
                     ), True))  # accepted=True because the academy already counts it
                     continue
 
+                # If a Hint button exists for this question and --use-hints
+                # is set, click it once + capture the revealed text. The
+                # academy renders hints in a modal so this is non-destructive
+                # (cube/HP-cost-wise it's free; some modules halve the
+                # reward but the demos still benefit either way).
+                if args.use_hints:
+                    hint = read_hint_for_question(cdp, q_idx)
+                    if hint and hint not in question.hints:
+                        question.hints.append(hint)
+                        print(f"[wizard]   q={question.id!r} hint: {hint[:120]!r}")
                 candidates = answerer.propose(
                     question, section, top_n=args.top_n,
                     module=module,
@@ -377,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
                     probe = probe_target_for_answer(
                         target_runner, question.prompt,
                         section_code_blocks=section.code_blocks,
+                        hints=question.hints,
                     )
                     probe_label = "TARGET-PROBE"
                     if probe is None:

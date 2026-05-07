@@ -681,28 +681,55 @@ _STOP_TARGET_BTN_JS = r"""
 
 _STOP_CONFIRM_JS = r"""
 (function(){
-    // Clicking the red-X "terminate-target" pops a confirmation modal.
-    // Live observation on academy.hackthebox.com: the modal has a
-    // primary action button (``primary-action-btn`` class) labelled
-    // "I understand", plus a generic "Continue" / "Okay" / "Yes"
-    // pattern on other dialogs. Match by class first (most reliable),
-    // then by text label.
-    const btns = Array.from(document.querySelectorAll('button'));
-    // Prefer the primary-action button class.
+    // Clicking the red-X "terminate-target" pops a confirmation modal
+    // titled "Terminate Target" with two buttons: "Terminate" (green
+    // primary, htb-button--primary) and "Go Back" (secondary).
+    //
+    // We MUST scope to currently-visible buttons to avoid clicking a
+    // stale primary-action button from an unrelated dismissed modal
+    // that's still in the DOM. The previous matcher was fooled by an
+    // "I understand" button left over from a different dialog and
+    // returned ok=True without actually terminating.
+    function isVisible(el) {
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return false;
+        const cs = window.getComputedStyle(el);
+        if (cs.visibility === 'hidden' || cs.display === 'none') return false;
+        if (parseFloat(cs.opacity || '1') === 0) return false;
+        return true;
+    }
+    const btns = Array.from(document.querySelectorAll('button')).filter(isVisible);
+
+    // 1. Most reliable: literal "Terminate" text (the actual confirm
+    //    button in the Terminate Target dialog). Reject any button
+    //    that contains the word "cancel" or "Go Back".
+    const terminateBtn = btns.find(b => {
+        const t = ((b.innerText||b.textContent)||'').trim();
+        return /^Terminate\b/i.test(t)
+            && !/cancel|go\s*back/i.test(t);
+    });
+    if (terminateBtn) {
+        terminateBtn.click();
+        return 'clicked Terminate button';
+    }
+    // 2. Fallback: primary-action-btn class (used by some other
+    //    confirmation dialogs like "I understand").
     const primary = btns.find(b =>
         (b.className || '').toString().includes('primary-action-btn')
     );
     if (primary) {
-        primary.click();
-        return 'clicked primary-action: ' + ((primary.innerText||primary.textContent)||'').trim();
+        const t = ((primary.innerText||primary.textContent)||'').trim();
+        // Don't click a Cancel-shaped button even if it has the class.
+        if (!/cancel|go\s*back|abort/i.test(t)) {
+            primary.click();
+            return 'clicked primary-action: ' + t;
+        }
     }
-    // Otherwise look for an unambiguous confirm-text button. We include
-    // "I understand" / "Continue" / "Confirm" / "Terminate" / "Yes" / "OK"
-    // and exclude anything containing "cancel".
+    // 3. Fallback: any other accept-shaped label.
     const cand = btns.find(b => {
         const t = ((b.innerText||b.textContent)||'').trim();
-        return /^(I\s+understand|Continue|Confirm|Yes|OK(ay)?|Terminate|Stop)\b/i.test(t)
-            && !/cancel/i.test(t);
+        return /^(I\s+understand|Continue|Confirm|Yes|OK(ay)?|Stop)\b/i.test(t)
+            && !/cancel|go\s*back/i.test(t);
     });
     if (cand) { cand.click(); return 'clicked: ' + (cand.innerText||cand.textContent||'').trim(); }
     return 'no confirm dialog';
@@ -791,6 +818,93 @@ def stop_target(cdp: CDPClient) -> tuple[bool, str]:
         if read_target_info(cdp) is None:
             return True, str(res.get("text") or "stopped")
     return True, "clicked but panel still shows running after 8s"
+
+
+_HINT_BUTTON_JS = r"""
+(function(qIdx){
+    const inputs = Array.from(document.querySelectorAll(
+        'input[placeholder*="answer" i], input[placeholder*="Write your"]'
+    ));
+    const inp = inputs[qIdx];
+    if (!inp) return {clicked:false, why:'no input at idx ' + qIdx};
+    let card = inp;
+    for (let i=0; i<8 && card; i++) {
+        if ((card.className || '').includes('collapse')) break;
+        card = card.parentElement;
+    }
+    if (!card) card = inp.closest('li') || inp.parentElement;
+    const btn = Array.from(card.querySelectorAll('button')).find(b =>
+        /^(Hint|Show\s+Hint)$/i.test(((b.innerText||b.textContent)||'').trim())
+    );
+    if (!btn) return {clicked:false, why:'no Hint button'};
+    if (btn.disabled) return {clicked:false, why:'Hint button disabled'};
+    btn.click();
+    return {clicked:true};
+})
+"""
+
+
+_HINT_MODAL_JS = r"""
+(function(){
+    // The Hint modal renders as a <dialog class="modal modal-open">
+    // outside the question card. Its full innerText is:
+    //   "Hint\n\n<the hint text>\n\nOkay\nClose"
+    // We strip the "Hint" header + the trailing button labels to leave
+    // just the body.
+    const dlg = document.querySelector('dialog.modal-open, dialog[open]');
+    if (!dlg) return null;
+    const t = (dlg.innerText || '').trim();
+    return t
+        .replace(/^Hint\s*/i, '')
+        .replace(/\s*(Okay|Close|Got\s+it|Cancel)\s*(Okay|Close|Got\s+it|Cancel)?\s*$/i, '')
+        .trim();
+})()
+"""
+
+
+_DISMISS_HINT_JS = r"""
+(function(){
+    const dlg = document.querySelector('dialog.modal-open, dialog[open]');
+    if (!dlg) return 'no modal';
+    const btn = Array.from(dlg.querySelectorAll('button')).find(b =>
+        /^(Okay|Close|Got\s+it)$/i.test(((b.innerText||b.textContent)||'').trim())
+    );
+    if (btn) { btn.click(); return 'dismissed'; }
+    // Fallback: try the dialog's native close.
+    if (typeof dlg.close === 'function') { dlg.close(); return 'closed via dialog.close'; }
+    return 'could not dismiss';
+})()
+"""
+
+
+def read_hint_for_question(
+    cdp: CDPClient, q_idx: int, *, settle_s: float = 1.5,
+) -> str | None:
+    """Click the Hint button for question ``q_idx`` and return the revealed text.
+
+    HTB Academy renders hints in a modal ``<dialog class="modal-open">``
+    outside the question card; we click Hint, wait for the modal to
+    paint, scrape its body text (stripping the "Hint" header and
+    "Okay"/"Close" buttons), then dismiss the modal.
+
+    Returns the hint string on success, None if no Hint button exists or
+    the modal didn't open. The wizard threads the hint into the
+    question's ``hints`` list so the answerer can use it as additional
+    reading-comprehension context.
+    """
+    res = cdp.evaluate(f"({_HINT_BUTTON_JS})({q_idx})") or {}
+    if not res.get("clicked"):
+        return None
+    time.sleep(settle_s)
+    text = cdp.evaluate(_HINT_MODAL_JS)
+    # Always try to dismiss whatever opened, even on read failure.
+    try:
+        cdp.evaluate(_DISMISS_HINT_JS)
+    except Exception:
+        pass
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    return None
 
 
 _UNLOCK_BUTTON_JS = r"""
@@ -1031,6 +1145,7 @@ __all__ = [
     "parse_cheatsheet_markdown",
     "pick_academy_tab",
     "read_cube_balance",
+    "read_hint_for_question",
     "read_target_info",
     "scrape_section",
     "spawn_target",

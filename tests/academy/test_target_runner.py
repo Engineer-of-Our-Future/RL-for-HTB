@@ -409,3 +409,37 @@ def test_probe_returns_none_for_unrelated_prompt():
     runner = FakeRunner(default=_resp(status=200, body="ok"))
     out = probe_target_for_answer(runner, "hello world how are you")
     assert out is None
+
+
+# ---- hints feed into pattern matching ---------------------------------------
+
+
+def test_probe_uses_hints_to_disambiguate_pattern():
+    """A vague prompt + a clarifying hint should fire a probe pattern that
+    the prompt alone wouldn't have matched."""
+    runner = FakeRunner(routes={
+        ("GET", "/"): _resp(headers={"Server": "Apache/2.4.41"}),
+    })
+    # Prompt by itself doesn't mention "version" or "Apache", so server-version
+    # pattern (regex anchored on "version of X") wouldn't match. The HINT
+    # supplies that anchor, and the probe should fire.
+    out = probe_target_for_answer(
+        runner,
+        "Check the response and submit the answer in X.Y.ZZ format",
+        hints=["The version of Apache running on the server is in the Server header"],
+    )
+    assert out is not None
+    assert out[0] == "2.4.41"
+
+
+def test_probe_without_hints_works_for_unaided_prompts():
+    """Backward-compat: no hints argument behaves like before."""
+    runner = FakeRunner(routes={
+        ("GET", "/"): _resp(headers={"Server": "Apache/2.4.41"}),
+    })
+    out = probe_target_for_answer(
+        runner,
+        "find the version of Apache running on the server (X.Y.ZZ)",
+    )
+    assert out is not None
+    assert out[0] == "2.4.41"

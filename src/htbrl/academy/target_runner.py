@@ -422,6 +422,7 @@ def probe_target_for_answer(
     question_prompt: str,
     *,
     section_code_blocks: list[str] | None = None,
+    hints: list[str] | None = None,
 ) -> tuple[str, str, float] | None:
     """Run a sequence of HTTP probes against ``runner``'s target trying to
     answer the question.
@@ -441,9 +442,21 @@ def probe_target_for_answer(
        walk all known endpoints from section code blocks, fetch each,
        and pull the matching key from any JSON body. Medium: 0.7.
     4. ``"what server header"`` -> ``GET /`` + return Server header.
+
+    ``hints`` is the per-question hint text the academy reveals when the
+    operator clicks the Hint button. We treat hints as ADDITIONAL prompt
+    text for pattern matching - the hint often disambiguates which
+    pattern applies (e.g. "the request method is at the beginning of the
+    HTTP request" tells us to look for an HTTP verb).
     """
-    p = question_prompt.lower()
+    # Combine the prompt with any hints so pattern regexes see both.
+    hints_text = " ".join(h for h in (hints or []) if h)
+    enriched_prompt = question_prompt + (" " + hints_text if hints_text else "")
+    p = enriched_prompt.lower()
     code_blocks = section_code_blocks or []
+    # For backwards-compat with patterns that use ``question_prompt``
+    # directly: keep a reference to the enriched version.
+    question_prompt = enriched_prompt
 
     # -- Pattern 1: server version -------------------------------------------
     # Examples:
