@@ -123,8 +123,20 @@ _NEXT_BUTTON_JS = """
 _ENTRY_BUTTON_JS = """
 (function(idx){
     const btns = Array.from(document.querySelectorAll('button, a'));
-    const cands = btns.filter(b => ['Revisit Module','Continue','Start Module','Resume Module']
-        .includes((b.innerText||'').trim()));
+    // The academy ships several variants of the "enter the module" button
+    // across module states + responsive viewports:
+    //   "Start Module"     - first time
+    //   "Continue"         - already started, current section unfinished
+    //   "Continue Module"  - same, mobile-prefixed variant
+    //   "Resume Module"    - timed-out session
+    //   "Revisit Module"   - completed module, view again
+    // Match by *prefix* so we tolerate the "Module" suffix variants without
+    // needing to enumerate every cross-product.
+    const ENTRY_LABELS = ['Revisit', 'Continue', 'Start Module', 'Resume Module', 'Start'];
+    const cands = btns.filter(b => {
+        const t = (b.innerText||'').trim();
+        return ENTRY_LABELS.some(l => t === l || t === l + ' Module');
+    });
     if (idx >= cands.length) return {clicked:false, count:cands.length};
     cands[idx].click();
     return {clicked:true, text:cands[idx].innerText.trim(), count:cands.length, idx};
@@ -349,6 +361,34 @@ def scrape_section(cdp: CDPClient) -> dict:
 def click_next(cdp: CDPClient) -> bool:
     """Click the section's Next button. Returns True iff a Next button was clicked."""
     return cdp.evaluate(_NEXT_BUTTON_JS) == "clicked Next"
+
+
+def click_next_and_advance(cdp: CDPClient, *, current_idx: int = 0,
+                           timeout_s: float = 8.0) -> bool:
+    """Click Next, then poll until the section_index increments.
+
+    The vanilla ``click_next`` returns immediately after the DOM click event
+    fires, but Vue Router's transition can take 1-3s before the new section
+    is rendered. If the walker scrapes too soon it gets the *previous*
+    section back, which trips the "already seen" loop-protection check and
+    halts the walk early.
+
+    This variant clicks, then polls ``Section X / Y`` until X > current_idx
+    OR the deadline expires. Returns True iff the index advanced.
+    """
+    if not click_next(cdp):
+        return False
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(0.3)
+        try:
+            scraped = cdp.evaluate(SECTION_SCRAPER_JS) or {}
+        except Exception:
+            continue
+        new_idx = int(scraped.get("sec_idx") or 0)
+        if new_idx > current_idx:
+            return True
+    return False
 
 
 _PREV_BUTTON_JS = """
@@ -640,6 +680,7 @@ __all__ = [
     "already_answered_flags",
     "build_section_from_scrape",
     "click_next",
+    "click_next_and_advance",
     "enter_module",
     "fetch_module_via_api",
     "go_to_first_section",

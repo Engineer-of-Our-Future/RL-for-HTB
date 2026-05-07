@@ -32,7 +32,7 @@ from htbrl.academy.answerer import HeuristicAnswerer
 from htbrl.academy.auto_demo_writer import session_to_demonstration
 from htbrl.academy.cdp_walker import (
     build_section_from_scrape,
-    click_next,
+    click_next_and_advance,
     enter_module,
     fetch_module_via_api,
     go_to_first_section,
@@ -121,10 +121,9 @@ def main(argv: list[str] | None = None) -> int:
             if section.section_total and section.section_index >= section.section_total:
                 print("[run] reached final section")
                 break
-            if not click_next(cdp):
-                print("[run] no Next button; stopping walk")
+            if not click_next_and_advance(cdp, current_idx=section.section_index):
+                print("[run] no Next button or section did not advance; stopping walk")
                 break
-            time.sleep(2)
     finally:
         try:
             ws.close()

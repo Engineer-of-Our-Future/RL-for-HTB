@@ -47,7 +47,7 @@ from htbrl.academy.auto_demo_writer import session_to_demonstration
 from htbrl.academy.cdp_walker import (
     already_answered_flags,
     build_section_from_scrape,
-    click_next,
+    click_next_and_advance,
     enter_module,
     fetch_module_via_api,
     go_to_first_section,
@@ -443,10 +443,9 @@ def main(argv: list[str] | None = None) -> int:
             if section.section_total and section.section_index >= section.section_total:
                 print("[wizard] reached final section")
                 break
-            if not click_next(cdp):
-                print("[wizard] no Next button; stopping walk")
+            if not click_next_and_advance(cdp, current_idx=section.section_index):
+                print("[wizard] no Next button or section did not advance; stopping walk")
                 break
-            time.sleep(2)
 
     except KeyboardInterrupt:
         print("\n[wizard] interrupted; saving demo with progress so far")
