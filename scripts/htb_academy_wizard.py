@@ -49,9 +49,11 @@ from htbrl.academy.cdp_walker import (
     build_section_from_scrape,
     click_next,
     enter_module,
+    fetch_module_via_api,
     go_to_first_section,
     is_lab_flag_question,
     open_cdp,
+    parse_cheatsheet_markdown,
     read_cube_balance,
     scrape_section,
     submit_answer_in_dom,
@@ -225,12 +227,33 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[wizard] attached to {ws_url}")
 
     cubes_before: int | None = None
+    cheat_sheet_rows: list[dict[str, str]] = []
+    api_prelude = ""
+    api_conclusion = ""
+    api_takeaways = ""
+    api_title = ""
     try:
         # Capture cube balance BEFORE we attempt anything, for the unlock-gate
         # readiness report at the end of the run.
         cubes_before = read_cube_balance(cdp)
         if cubes_before is not None:
             print(f"[wizard] cubes_balance before run: {cubes_before}")
+
+        # Fetch module-level metadata via the academy's authenticated API:
+        # cheat sheet (markdown table of canonical commands), prelude,
+        # conclusion, takeaways. The cheat sheet is high-precision context
+        # for the answerer; prelude/conclusion become extra theory bytes.
+        api = fetch_module_via_api(cdp, args.module_id)
+        if api and not api.get("__error"):
+            cheat_sheet_rows = parse_cheatsheet_markdown(api.get("cheatsheet") or "")
+            api_prelude = (api.get("prelude") or "").strip()
+            api_conclusion = (api.get("conclusion") or "").strip()
+            api_takeaways = (api.get("takeaways") or "").strip()
+            api_title = (api.get("name") or "").strip()
+            print(f"[wizard] API metadata: cheat_rows={len(cheat_sheet_rows)} "
+                  f"prelude={len(api_prelude)} title={api_title!r}")
+        else:
+            print(f"[wizard] API metadata unavailable: {api}")
 
         entered, url = enter_module(cdp, args.module_id)
         print(f"[wizard] entered module: {url}  (entered={entered})")
@@ -266,7 +289,20 @@ def main(argv: list[str] | None = None) -> int:
                     ), True))  # accepted=True because the academy already counts it
                     continue
 
-                candidates = answerer.propose(question, section, top_n=args.top_n)
+                # Build a temporary module wrapper so the answerer can also
+                # match against the cheat sheet (the canonical command/desc
+                # table). This is the same module we'll save to disk later.
+                _module_for_answerer = AcademyModule(
+                    id=str(args.module_id),
+                    title=args.module_title or api_title or f"Module {args.module_id}",
+                    tier=0, sections=sections, category="general",
+                    cheat_sheet=cheat_sheet_rows,
+                    prelude=api_prelude,
+                )
+                candidates = answerer.propose(
+                    question, section, top_n=args.top_n,
+                    module=_module_for_answerer,
+                )
                 top = candidates[0] if candidates else None
                 lab_flag = is_lab_flag_question(question)
                 # -- decide path -----------------------------------------------------
@@ -427,10 +463,14 @@ def main(argv: list[str] | None = None) -> int:
 
     module = AcademyModule(
         id=str(args.module_id),
-        title=args.module_title or f"Module {args.module_id}",
+        title=args.module_title or api_title or f"Module {args.module_id}",
         tier=0,
         sections=sections,
         category="general",
+        cheat_sheet=cheat_sheet_rows,
+        prelude=api_prelude,
+        conclusion=api_conclusion,
+        takeaways=api_takeaways,
     )
     extra = {
         "cdp_endpoint": args.cdp,

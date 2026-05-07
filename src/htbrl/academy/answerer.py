@@ -29,6 +29,7 @@ from typing import Callable
 
 from htbrl.academy.page_models import (
     AcademyAnswer,
+    AcademyModule,
     AcademyQuestion,
     AcademySection,
     QuestionType,
@@ -211,14 +212,25 @@ class HeuristicAnswerer:
 
     # ---- public API ---------------------------------------------------------
 
-    def answer(self, question: AcademyQuestion, section: AcademySection) -> AcademyAnswer:
+    def answer(
+        self,
+        question: AcademyQuestion,
+        section: AcademySection,
+        *,
+        module: AcademyModule | None = None,
+    ) -> AcademyAnswer:
         """Return the single best-confidence candidate (legacy single-best API).
 
         Always returns an ``AcademyAnswer`` - if every generator failed it's a
         ``method="skipped"`` placeholder so the orchestrator can still record
         the attempt.
+
+        ``module`` (optional) gives the answerer access to module-level
+        artifacts like the cheat sheet, prelude, and takeaways. When supplied,
+        the cheat-sheet generator runs first and tends to dominate confidence
+        for "what command does X" questions.
         """
-        candidates = self.propose(question, section)
+        candidates = self.propose(question, section, module=module)
         if candidates:
             return candidates[0]
         return AcademyAnswer(
@@ -233,12 +245,17 @@ class HeuristicAnswerer:
         section: AcademySection,
         *,
         top_n: int = 5,
+        module: AcademyModule | None = None,
     ) -> list[AcademyAnswer]:
         """Return up to ``top_n`` ranked candidate answers, best first.
 
         Used by the wizard so the operator can pick from alternatives when the
         top guess is wrong, and by the auto-submit path which checks the top
         candidate's confidence against a threshold.
+
+        ``module`` (optional): when supplied, the answerer also matches the
+        question against the module's cheat sheet rows (highest precision
+        for command-style questions).
         """
         if question.type == QuestionType.MULTIPLE_CHOICE:
             return self._propose_mc(question, section)[:top_n]
@@ -247,6 +264,8 @@ class HeuristicAnswerer:
             return [self._answer_flag(question, section)][:top_n]
         if question.type == QuestionType.TEXT:
             cands = self._propose_text(question, section)
+            if module is not None and module.cheat_sheet:
+                cands.extend(self._gen_cheat_sheet(question, module, question.id))
             return _dedupe_keep_best(cands)[:top_n]
         # Unsupported type - return one skipped marker so callers see a record.
         return [AcademyAnswer(
@@ -591,6 +610,69 @@ class HeuristicAnswerer:
             method="lone_inline_code",
             rationale="section has a single inline-code span",
         )]
+
+    # ---- cheat sheet --------------------------------------------------------
+
+    def _gen_cheat_sheet(
+        self, question: AcademyQuestion, module: AcademyModule, qid: str,
+    ) -> list[AcademyAnswer]:
+        """Match question prompt against rows of the module's cheat sheet.
+
+        Each cheat-sheet row is a structured dict like ``{"command": "ls",
+        "description": "lists files in a directory"}``. The matcher scores
+        each row's *description* (and any non-command columns) against the
+        prompt's tokens; the row whose description best overlaps the prompt
+        contributes its *command* (or first column) as a candidate answer.
+
+        High base confidence (0.55-0.95) because cheat-sheet rows are the
+        academy's own canonical command -> description mapping. The earlier
+        generators are still allowed to overrule via dedupe / better score.
+        """
+        rows = module.cheat_sheet or []
+        if not rows:
+            return []
+        prompt_tokens = _tokenize(question.prompt)
+        if not prompt_tokens:
+            return []
+        # Heuristic: the answer column is whichever is named "command",
+        # "tool", "option", "flag", "syntax", or column 0. The description
+        # column is whatever else exists.
+        keys = list(rows[0].keys())
+        answer_key = next(
+            (k for k in keys if k in {"command", "tool", "option",
+                                      "flag", "switch", "syntax",
+                                      "shortcut", "key"}),
+            keys[0] if keys else "command",
+        )
+        desc_keys = [k for k in keys if k != answer_key]
+        out: list[AcademyAnswer] = []
+        scored: list[tuple[float, dict[str, str]]] = []
+        for row in rows:
+            desc_tokens = set()
+            for k in desc_keys:
+                desc_tokens |= _tokenize(row.get(k, ""))
+            score = _jaccard(prompt_tokens, desc_tokens)
+            if score > 0:
+                scored.append((score, row))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        for rank, (score, row) in enumerate(scored[:5]):
+            ans = row.get(answer_key, "").strip()
+            if not _is_meaningful_answer(ans):
+                continue
+            # Top match gets the strongest confidence (cheat sheets rarely
+            # mislead) but cap so single-token-stuffed rows don't dominate.
+            base = 0.85 if rank == 0 else max(0.45, 0.85 - 0.1 * rank)
+            conf = min(0.95, base * (0.5 + score))
+            out.append(AcademyAnswer(
+                question_id=qid, answer_text=ans,
+                confidence=conf,
+                method="cheat_sheet_match",
+                rationale=(
+                    f"cheat-sheet row #{rank+1} ({answer_key}={ans!r}) "
+                    f"description-overlap={score:.2f}"
+                ),
+            ))
+        return out
 
     # ---- flag (sandbox) -----------------------------------------------------
 

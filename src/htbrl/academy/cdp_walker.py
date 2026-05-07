@@ -494,6 +494,108 @@ def read_cube_balance(cdp: CDPClient) -> int | None:
         return None
 
 
+def fetch_module_via_api(cdp: CDPClient, module_id: int | str) -> dict | None:
+    """Fetch ``/api/v2/modules/<id>`` from inside the authenticated page.
+
+    Returns the unwrapped ``data`` object (containing ``cheatsheet``,
+    ``prelude``, ``conclusion``, ``takeaways``, ``name``, ``sections``,
+    etc.) or None if the request failed.
+
+    This is much cheaper than walking sections one-by-one: one fetch covers
+    the whole module's metadata. The walker still scrapes section bodies
+    via DOM (the API doesn't return rendered theory HTML), but cheatsheet
+    + prelude come from here.
+    """
+    expr = f"""
+    (async () => {{
+        try {{
+            const r = await fetch('/api/v2/modules/{module_id}', {{credentials: 'include'}});
+            if (!r.ok) return {{__error: 'http ' + r.status}};
+            const j = await r.json();
+            return j.data || j;
+        }} catch (e) {{
+            return {{__error: String(e)}};
+        }}
+    }})()
+    """
+    try:
+        v = cdp.evaluate(expr, await_promise=True)
+    except Exception as exc:
+        return {"__error": str(exc)}
+    if not isinstance(v, dict):
+        return None
+    return v
+
+
+def parse_cheatsheet_markdown(md: str) -> list[dict[str, str]]:
+    """Parse an HTB Academy cheatsheet markdown table into structured rows.
+
+    Input format (from ``data.cheatsheet`` on the modules API):
+
+        | **Command** | **Description** |
+        |-------------|-----------------|
+        | ``man <tool>`` | Opens man pages for the specified tool. |
+        | ``<tool> -h`` | Prints the help page of the tool. |
+
+    Returns a list of dicts, one per data row, with keys taken from the
+    header row (lowercased, whitespace-collapsed). Markdown emphasis
+    (``**foo**``) and inline code backticks are stripped from cell values
+    so the answerer can compare commands directly.
+
+    Lines that aren't pipe-separated (intro paragraphs etc.) are ignored.
+    Sub-headers / category dividers ("**Filesystem commands**" with no
+    pipes) are also skipped.
+    """
+    if not md:
+        return []
+    rows: list[list[str]] = []
+    for raw in md.splitlines():
+        line = raw.strip()
+        if not line.startswith("|") or not line.endswith("|"):
+            continue
+        # Drop the leading/trailing pipe then split on |, trimming each cell.
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if not cells:
+            continue
+        rows.append(cells)
+    if not rows:
+        return []
+    # First row = header, second = separator (---|---), rest = data.
+    header_cells = rows[0]
+    keys = [_clean_cell(c).lower().replace(" ", "_") or f"col_{i}"
+            for i, c in enumerate(header_cells)]
+    out: list[dict[str, str]] = []
+    for cells in rows[1:]:
+        # Skip the markdown separator row ("---|---|").
+        if all(set(c) <= set("-: ") for c in cells):
+            continue
+        # Pad / truncate to header length.
+        if len(cells) < len(keys):
+            cells = cells + [""] * (len(keys) - len(cells))
+        cells = cells[: len(keys)]
+        row = {k: _clean_cell(v) for k, v in zip(keys, cells)}
+        # Drop fully-empty rows.
+        if any(v for v in row.values()):
+            out.append(row)
+    return out
+
+
+def _clean_cell(s: str) -> str:
+    """Strip markdown bold/italic and inline-code ticks from a cell value."""
+    s = (s or "").strip()
+    # Remove **bold** and *italic*; keep contents.
+    while s.startswith("**") and s.endswith("**") and len(s) > 4:
+        s = s[2:-2].strip()
+    while s.startswith("*") and s.endswith("*") and len(s) > 2:
+        s = s[1:-1].strip()
+    # Strip a leading/trailing single backtick if present.
+    if s.startswith("`") and s.endswith("`") and len(s) > 2:
+        s = s[1:-1].strip()
+    # Replace common HTML entities the academy uses.
+    s = s.replace("&nbsp;", " ").replace("\xa0", " ")
+    return s
+
+
 def already_answered_flags(scraped: dict) -> list[bool]:
     """Per-question 'is this already accepted on the page' booleans.
 
@@ -539,10 +641,12 @@ __all__ = [
     "build_section_from_scrape",
     "click_next",
     "enter_module",
+    "fetch_module_via_api",
     "go_to_first_section",
     "is_lab_flag_question",
     "navigate_and_wait",
     "open_cdp",
+    "parse_cheatsheet_markdown",
     "pick_academy_tab",
     "read_cube_balance",
     "scrape_section",

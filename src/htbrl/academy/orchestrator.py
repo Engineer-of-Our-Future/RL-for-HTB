@@ -235,7 +235,7 @@ class AutoLearner:
                         break
                     n_questions_seen += 1
 
-                    answer = ans.answer(q, section)
+                    answer = ans.answer(q, section, module=module)
                     log.info(
                         "  q=%s  method=%s  conf=%.2f  ans=%r",
                         q.id, answer.method, answer.confidence,

@@ -169,6 +169,66 @@ def section_read_turn(
     )
 
 
+def cheat_sheet_turn(
+    module: AcademyModule,
+    *,
+    module_techniques: list[str] | None = None,
+) -> DemoTurn | None:
+    """Emit one synthetic 'I read the module's cheat sheet' turn, if any.
+
+    Returns None when the module has no cheatsheet rows (theory-only modules
+    like "Intro To Academy" or "Learning Process" don't carry one). Otherwise
+    renders the cheatsheet rows as a compact markdown table in ``obs_text``,
+    capped at ~6 KB so a giant cheatsheet doesn't dominate token budgets.
+
+    The cheatsheet is hugely valuable training data: it's the academy's own
+    canonical command -> description map for the module, and many text
+    questions are essentially "which row of the cheatsheet does this match?"
+    BC training on this turn lets the policy attend to the table verbatim.
+    Module-level ATT&CK techniques tag the turn so the technique-coverage
+    report credits the demo for reading the canonical reference.
+    """
+    rows = module.cheat_sheet or []
+    if not rows:
+        return None
+    parts: list[str] = [f"[academy-cheatsheet:{module.title}]"]
+    if module.prelude:
+        prelude = module.prelude if len(module.prelude) <= 1024 else module.prelude[:1024] + "…"
+        parts.append("## Prelude\n" + prelude)
+    parts.append("## Cheatsheet")
+    # Render as Markdown table for the policy's consumption (matches the
+    # academy's own format, so BC can fall back on training-data verbatim).
+    keys = list(rows[0].keys()) if rows else []
+    parts.append("| " + " | ".join(keys) + " |")
+    parts.append("|" + "|".join("---" for _ in keys) + "|")
+    rendered = 0
+    for row in rows:
+        line = "| " + " | ".join(row.get(k, "") for k in keys) + " |"
+        # Cap total cheatsheet text at ~6 KB to stay token-bounded.
+        if sum(len(p) + 2 for p in parts) + len(line) > 6_500:
+            parts.append(f"...[truncated; {len(rows) - rendered} more rows]")
+            break
+        parts.append(line)
+        rendered += 1
+    obs_text = "\n".join(parts)
+    return DemoTurn(
+        obs_text=obs_text,
+        action_tool_id=-1,
+        action_tool_name="academy_cheat_sheet",
+        action_slots={
+            "module_id": module.id,
+            "module_title": module.title,
+            "n_rows": len(rows),
+            "n_rows_rendered": rendered,
+            "columns": keys,
+        },
+        action_render=f"academy_cheat_sheet: {len(rows)} rows for {module.title!r}",
+        reward=0.05,  # higher than section_read - the cheatsheet IS the answer key
+        techniques_attempted=list(module_techniques or []),
+        techniques_succeeded=[],
+    )
+
+
 def sandbox_cmd_to_demo_turn(
     answer: AcademyAnswer,
     accepted: bool,
@@ -225,6 +285,14 @@ def session_to_demonstration(
     # narrowing reuses it for every section.
     module_techniques = techniques_for_module(module)
 
+    # If the module carries a cheat sheet (academy-side canonical command
+    # reference), emit it FIRST so BC sees the answer key before the
+    # questions. This often turns "what command does X" questions into
+    # near-trivial pattern matches against a row the policy has already read.
+    cheat_turn = cheat_sheet_turn(module, module_techniques=module_techniques)
+    if cheat_turn is not None:
+        turns.append(cheat_turn)
+
     for section in module.sections:
         section_tags = techniques_for_section(section, module_techniques)
         if include_section_read_turns:
@@ -275,6 +343,12 @@ def session_to_demonstration(
         # weighting, coverage report) can see what this demo is teaching
         # without re-deriving it from the per-turn lists.
         "module_techniques": list(module_techniques),
+        # Cheat-sheet shape so the coverage report can show "X rows" without
+        # round-tripping through the turn list.
+        "n_cheat_sheet_rows": len(module.cheat_sheet or []),
+        "has_prelude": bool(module.prelude),
+        "has_conclusion": bool(module.conclusion),
+        "has_takeaways": bool(module.takeaways),
     }
     if extra_metadata:
         md.update(extra_metadata)

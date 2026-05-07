@@ -34,8 +34,10 @@ from htbrl.academy.cdp_walker import (
     build_section_from_scrape,
     click_next,
     enter_module,
+    fetch_module_via_api,
     go_to_first_section,
     open_cdp,
+    parse_cheatsheet_markdown,
     scrape_section,
 )
 from htbrl.academy.page_models import (
@@ -68,7 +70,30 @@ def main(argv: list[str] | None = None) -> int:
 
     cdp, ws, ws_url = open_cdp(args.cdp)
     print(f"[run] attaching to {ws_url}")
+    cheat_sheet_rows: list[dict[str, str]] = []
+    api_prelude = ""
+    api_conclusion = ""
+    api_takeaways = ""
+    api_title = ""
     try:
+        # Fetch module-level metadata via the academy's authenticated API.
+        # This carries the cheat sheet (markdown table of canonical
+        # commands), prelude, conclusion, and takeaways - all valuable as
+        # training data and as additional answerer context.
+        api = fetch_module_via_api(cdp, args.module_id)
+        if api and not api.get("__error"):
+            cheat_md = api.get("cheatsheet") or ""
+            cheat_sheet_rows = parse_cheatsheet_markdown(cheat_md)
+            api_prelude = (api.get("prelude") or "").strip()
+            api_conclusion = (api.get("conclusion") or "").strip()
+            api_takeaways = (api.get("takeaways") or "").strip()
+            api_title = (api.get("name") or "").strip()
+            print(f"[run]   API metadata: cheat_rows={len(cheat_sheet_rows)} "
+                  f"prelude={len(api_prelude)} takeaways={len(api_takeaways)} "
+                  f"title={api_title!r}")
+        else:
+            print(f"[run]   API metadata unavailable: {api}")
+
         entered, url = enter_module(cdp, args.module_id)
         print(f"[run]   in section view: {url}  (entered={entered})")
         if not entered:
@@ -106,7 +131,21 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
 
+    module = AcademyModule(
+        id=str(args.module_id),
+        title=args.module_title or api_title or f"Module {args.module_id}",
+        tier=0,
+        sections=sections,
+        category="general",
+        cheat_sheet=cheat_sheet_rows,
+        prelude=api_prelude,
+        conclusion=api_conclusion,
+        takeaways=api_takeaways,
+    )
+
     # Run the answerer over any questions and build submission tuples.
+    # The answerer takes ``module=`` so it can match against the cheat sheet
+    # too (highest-precision source for "what command does X" questions).
     answerer = HeuristicAnswerer()
     submissions: list[tuple[str, AcademyAnswer, bool]] = []
     n_questions = sum(len(s.questions) for s in sections)
@@ -116,19 +155,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[run] running answerer on {n_questions} question(s)")
     for s in sections:
         for q in s.questions:
-            ans = answerer.answer(q, s)
+            ans = answerer.answer(q, s, module=module)
             print(f"[run]   q={q.id!r} method={ans.method} conf={ans.confidence:.2f} "
                   f"answer={ans.answer_text[:60]!r}")
             # study_only: we never submit; accepted=False unconditionally.
             submissions.append((str(args.module_id), ans, False))
-
-    module = AcademyModule(
-        id=str(args.module_id),
-        title=args.module_title or f"Module {args.module_id}",
-        tier=0,
-        sections=sections,
-        category="general",
-    )
     demo = session_to_demonstration(
         module, submissions, study_only=True,
         extra_metadata={"cdp_endpoint": args.cdp},

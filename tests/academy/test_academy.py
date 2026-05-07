@@ -876,6 +876,121 @@ def test_lab_flag_detection_negative_for_theory_question():
         assert is_lab_flag_question(q) is False, f"false-positive on theory: {prompt!r}"
 
 
+# ---- cheat sheet -----------------------------------------------------------
+
+
+def test_parse_cheatsheet_markdown_basic():
+    """The markdown table format used by HTB Academy parses into structured rows."""
+    from htbrl.academy.cdp_walker import parse_cheatsheet_markdown
+    md = (
+        "| **Command** | **Description** |\n"
+        "|-------------|-----------------|\n"
+        "| `ls` | Lists files in a directory. |\n"
+        "| `pwd` | Prints the current working directory. |\n"
+    )
+    rows = parse_cheatsheet_markdown(md)
+    assert rows == [
+        {"command": "ls", "description": "Lists files in a directory."},
+        {"command": "pwd", "description": "Prints the current working directory."},
+    ]
+
+
+def test_parse_cheatsheet_markdown_skips_non_table_lines():
+    md = (
+        "Some intro text without pipes.\n"
+        "| Command | Description |\n"
+        "|---|---|\n"
+        "| ls | lists files |\n"
+        "Trailing prose.\n"
+    )
+    from htbrl.academy.cdp_walker import parse_cheatsheet_markdown
+    rows = parse_cheatsheet_markdown(md)
+    assert rows == [{"command": "ls", "description": "lists files"}]
+
+
+def test_parse_cheatsheet_markdown_empty_returns_empty_list():
+    from htbrl.academy.cdp_walker import parse_cheatsheet_markdown
+    assert parse_cheatsheet_markdown("") == []
+    assert parse_cheatsheet_markdown(None) == []  # type: ignore[arg-type]
+
+
+def test_propose_uses_cheat_sheet_when_module_supplied():
+    """When the module carries a cheat sheet whose description matches the
+    prompt, the answerer should surface that row's command as the top candidate."""
+    section = AcademySection(
+        id="s", title="basics",
+        body_text="Filesystem basics.",
+    )
+    module = AcademyModule(
+        id="m1", title="Linux Fundamentals", tier=0,
+        cheat_sheet=[
+            {"command": "ls", "description": "Lists files in a directory"},
+            {"command": "pwd", "description": "Prints the current working directory"},
+            {"command": "cat", "description": "Concatenate and print files"},
+        ],
+    )
+    q = AcademyQuestion(
+        id="q", prompt="Which command lists files in a directory?",
+        type=QuestionType.TEXT,
+    )
+    cands = HeuristicAnswerer().propose(q, section, module=module)
+    assert cands[0].answer_text == "ls"
+    assert cands[0].method == "cheat_sheet_match"
+    assert cands[0].confidence >= 0.5
+
+
+def test_propose_without_module_does_not_use_cheat_sheet():
+    """Backward compatibility: ``module=`` is optional; absent it the answerer
+    must work exactly as before with no cheat-sheet fallback."""
+    section = AcademySection(
+        id="s", title="basics",
+        body_text="The ls command lists files.",
+    )
+    q = AcademyQuestion(
+        id="q", prompt="Which command lists files?", type=QuestionType.TEXT,
+    )
+    cands = HeuristicAnswerer().propose(q, section)
+    # No cheat_sheet_match candidate appears (no module supplied).
+    assert all(c.method != "cheat_sheet_match" for c in cands)
+
+
+def test_cheat_sheet_turn_emits_when_module_has_rows():
+    from htbrl.academy.auto_demo_writer import cheat_sheet_turn
+    module = AcademyModule(
+        id="m1", title="Linux Fundamentals", tier=0,
+        cheat_sheet=[
+            {"command": "ls", "description": "Lists files"},
+            {"command": "pwd", "description": "Prints working dir"},
+        ],
+    )
+    turn = cheat_sheet_turn(module)
+    assert turn is not None
+    assert turn.action_tool_name == "academy_cheat_sheet"
+    assert "Cheatsheet" in turn.obs_text
+    assert "ls" in turn.obs_text
+    assert "pwd" in turn.obs_text
+    assert turn.action_slots["n_rows"] == 2
+
+
+def test_cheat_sheet_turn_returns_none_for_empty_cheat_sheet():
+    from htbrl.academy.auto_demo_writer import cheat_sheet_turn
+    module = AcademyModule(id="m1", title="x", tier=0, cheat_sheet=[])
+    assert cheat_sheet_turn(module) is None
+
+
+def test_session_to_demonstration_includes_cheat_sheet_turn():
+    from htbrl.academy.auto_demo_writer import session_to_demonstration
+    module = AcademyModule(
+        id="m1", title="Linux Fundamentals", tier=0,
+        sections=[AcademySection(id="s1", title="x", body_text="x")],
+        cheat_sheet=[{"command": "ls", "description": "lists files"}],
+    )
+    demo = session_to_demonstration(module, [])
+    tool_names = [t.action_tool_name for t in demo.turns]
+    assert "academy_cheat_sheet" in tool_names
+    assert demo.metadata["n_cheat_sheet_rows"] == 1
+
+
 # ---- junk-candidate filter (regression for "h" / "." / "/" answers) ------
 
 

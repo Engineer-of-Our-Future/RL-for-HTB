@@ -102,6 +102,21 @@ class AcademyModule:
     # Penetration Tester").
     category: str = "other"
     path_ids: list[str] = field(default_factory=list)
+    # Cheat sheet attached to the module (HTB Academy modules expose a
+    # markdown table at ``/api/v2/modules/<id>`` -> ``data.cheatsheet``).
+    # Each row is a structured dict, e.g. ``{"command": "ls",
+    # "description": "lists files in a directory"}``. Used by the answerer
+    # as a high-precision command -> description lookup AND surfaced in
+    # demos as one ``academy_cheat_sheet`` turn so BC training sees the
+    # canonical reference next to the theory text.
+    cheat_sheet: list[dict[str, str]] = field(default_factory=list)
+    # Prelude / conclusion / takeaways copy from the modules API; these
+    # carry module-level intro and learning objectives respectively. They
+    # often state the LITERAL answers to summary questions and are
+    # therefore valuable as theory context for the answerer.
+    prelude: str = ""
+    conclusion: str = ""
+    takeaways: str = ""
 
     @property
     def all_questions(self) -> list[AcademyQuestion]:
