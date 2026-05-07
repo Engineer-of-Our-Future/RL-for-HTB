@@ -1,13 +1,22 @@
 # Override file for HTB Academy DOM selectors.
 #
-# The Playwright session in src/htbrl/academy/playwright_session.py ships
-# with a baked-in default selector set (_DEFAULT_SELECTORS). Drop overrides
-# here to update selectors without touching Python.
-#
-# Each top-level key matches a screen / page; sub-keys are stable role names.
-# Anything you DON'T override falls through to the baked-in default.
+# These were captured from the real DOM at https://account.hackthebox.com/login
+# (HTB unified SSO, Vuetify-based) and the academy listing pages. Update them
+# here when the academy redesigns its UI; src/htbrl/academy/playwright_session.py
+# falls through to its baked-in defaults for any key not overridden here.
 
-login: {}
+login:
+  # SSO is at account.hackthebox.com, not academy.hackthebox.com - the
+  # academy redirects you there automatically.
+  url: "https://account.hackthebox.com/login"
+  email: "#loginEmail"
+  password: "#loginPassword"
+  submit: "form#loginForm button[type='submit']"
+  # Vuetify keeps the button disabled while the Cloudflare Turnstile token is
+  # being acquired. Wait for this selector before clicking.
+  submit_enabled: "form#loginForm button[type='submit']:not([disabled])"
+  logged_in_marker: ".htb-user-avatar, [data-test='user-menu']"
+  captcha_marker: "#turnstile-login"
 
 modules_list: {}
 
