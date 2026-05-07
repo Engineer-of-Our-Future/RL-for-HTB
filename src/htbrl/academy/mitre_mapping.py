@@ -109,9 +109,217 @@ ACADEMY_MODULE_TECHNIQUES: dict[str, list[str]] = {
         "T1027",      # Obfuscated Files or Information
         "T1140",      # Deobfuscate/Decode Files or Information
     ],
+    "obfuscat": ["T1027", "T1140"],         # "obfuscation" / "obfuscated"
+    "deobfuscat": ["T1027", "T1140"],
+    "javascript deobfusc": ["T1027", "T1140", "T1059.007"],
     # Theory-only / non-offensive (keep empty deliberately) ---
     "intro to academy": [],
     "learning process": [],
+    "setting up": [],
+    "documentation & reporting": [],
+    "documentation and reporting": [],
+    "incident handling process": [],
+    "bug bounty hunting process": [],
+    "penetration testing process": [],
+    # ---- web vulns ----------------------------------------------------------
+    "file inclusion": ["T1190", "T1505.003"],
+    "file upload attacks": ["T1190", "T1505.003"],
+    "command injection": ["T1059", "T1190"],
+    "command injections": ["T1059", "T1190"],
+    "server-side attacks": ["T1190", "T1505.003"],
+    "session security": ["T1539", "T1550.004"],   # Steal Web Session Cookie / Web Session Cookie
+    "broken authentication": ["T1078", "T1110"],   # Valid Accounts / Brute Force
+    "attacking authentication mechanisms": ["T1110", "T1078", "T1556"],
+    "deserialization": ["T1190", "T1059"],
+    "injection attacks": ["T1190", "T1059"],
+    "whitebox attacks": ["T1190", "T1059"],
+    "whitebox pentesting": ["T1190", "T1059"],
+    "http attacks": ["T1190"],
+    "https/tls attacks": ["T1557", "T1040"],   # Adversary-in-the-Middle / Network Sniffing
+    "tls attack": ["T1557", "T1040"],
+    "abusing http": ["T1190"],
+    "http misconfigurations": ["T1190"],
+    "web service & api attacks": ["T1190", "T1071.001"],
+    "api attack": ["T1190", "T1071.001"],
+    "web fuzzing": ["T1190", "T1595.003"],     # Active Scanning: Wordlist Scanning
+    "ffuf": ["T1190", "T1595.003"],
+    "attacking web applications with ffuf": ["T1190", "T1595.003"],
+    "introduction to web applications": ["T1190", "T1505.003"],
+    "hacking wordpress": ["T1190", "T1505.003"],
+    "wordpress": ["T1190"],
+    "sqlmap": ["T1190", "T1213"],
+    "using web proxies": ["T1090", "T1557"],
+    "web proxies": ["T1090", "T1557"],
+    "secure coding 101": ["T1190"],
+    # ---- enumeration / recon -----------------------------------------------
+    "dns enumeration": ["T1018", "T1590.002"],
+    "osint": ["T1593", "T1591", "T1589"],     # Search Open Websites/Domains, Gather Victim Org Info, Identity Info
+    "corporate recon": ["T1593", "T1591", "T1589"],
+    "vulnerability assessment": ["T1595.002"],   # Active Scanning: Vuln Scanning
+    "network foundations": ["T1018", "T1046"],
+    "introduction to networking": ["T1018", "T1046", "T1590"],
+    # ---- credential access / brute force -----------------------------------
+    "login brute forcing": ["T1110", "T1110.001", "T1110.003"],   # Password Guessing / Spraying
+    "brute force": ["T1110"],
+    # ---- exploitation frameworks -------------------------------------------
+    "metasploit": ["T1059", "T1190", "T1068"],
+    "using the metasploit": ["T1059", "T1190"],
+    # ---- traffic / network analysis ----------------------------------------
+    "intro to network traffic analysis": ["T1040"],   # Network Sniffing
+    "network traffic analysis": ["T1040"],
+    "wireshark": ["T1040"],
+    "tcpdump": ["T1040"],
+    # ---- wireless ----------------------------------------------------------
+    "wired equivalent privacy": ["T1040", "T1110"],
+    "wep attack": ["T1040", "T1110"],
+    "wi-fi protected setup": ["T1110"],
+    "wps": ["T1110"],
+    "wifi": ["T1040"],
+    # ---- platforms ---------------------------------------------------------
+    "macos fundamentals": [
+        "T1059.004",   # Unix Shell (zsh/bash)
+        "T1083", "T1018", "T1057",
+    ],
+    "android fundamentals": [
+        # Mobile ATT&CK ids (mobile matrix overlap with the enterprise track).
+        "T1404",       # Exploit OS Vulnerability (Mobile)
+        "T1418",       # Software Discovery (Mobile)
+        "T1471",       # Data Encrypted for Impact (Mobile)
+    ],
+    # ---- assembly / binary -------------------------------------------------
+    "intro to assembly language": ["T1203", "T1068"],
+    "assembly language": ["T1203", "T1068"],
+    "stack-based buffer overflows on linux": ["T1203", "T1068"],
+    "stack-based buffer overflows on windows": ["T1203", "T1068"],
+    # ---- AD-adjacent + post-ex tooling -------------------------------------
+    "using crackmapexec": ["T1110", "T1003", "T1021.002"],   # SMB/Windows Admin Shares
+    "crackmapexec": ["T1110", "T1003", "T1021.002"],
+    "windows attacks & defense": ["T1558", "T1003", "T1078"],
+    "attacking enterprise networks": ["T1558", "T1003", "T1003.006", "T1208"],
+    # ---- attacking common targets ------------------------------------------
+    "attacking common applications": ["T1190", "T1505.003"],
+    "attacking common services": ["T1110", "T1021"],   # Remote Services
+    # ---- introduction to information security ------------------------------
+    "introduction to information security": [],   # foundational, non-offensive
+    "intro to information security": [],
+    # ---- specialty ---------------------------------------------------------
+    "introduction to bash scripting": ["T1059.004"],
+    "introduction to python": ["T1059.006"],   # Python
+    "python 3": ["T1059.006"],
+    "introduction to windows command line": ["T1059.003"],
+    "windows command line": ["T1059.003"],
+    "intro to academy's purple modules": [],
+    "purple modules": [],
+    "fundamentals of ai": [],
+    "applications of ai in infosec": [],
+    "brief intro to hardware attacks": ["T1200"],   # Hardware Additions
+    "hardware attacks": ["T1200"],
+    "game hacking": ["T1055"],   # Process Injection (game memory editing)
+    "game reversing": ["T1027", "T1140"],
+    "getting started": ["T1595.001", "T1018", "T1046"],   # foundational pentest module
+    # ---- defensive / SOC / blue-team ---------------------------------------
+    # ATT&CK technique IDs used here are the offensive techniques the
+    # defender is *detecting*. The demo turns are observation-side
+    # (analyzing artifacts, alerts, logs) so we tag the techniques the
+    # learner is being trained to recognize.
+    "security monitoring": ["T1059", "T1078", "T1003"],
+    "siem fundamentals": ["T1059", "T1078", "T1003"],
+    "splunk": ["T1059", "T1003", "T1078"],
+    "elastic": ["T1059", "T1003"],
+    "threat hunting": ["T1059", "T1003", "T1078"],
+    "windows event logs": ["T1059.001", "T1059.003", "T1078"],
+    "log sources": ["T1059", "T1078"],
+    "yara": ["T1027", "T1140"],
+    "sigma for soc": ["T1059", "T1078"],
+    "yara & sigma": ["T1027", "T1140", "T1059"],
+    "ids/ips": ["T1071.001", "T1027"],
+    "intrusion detection": ["T1071.001"],
+    "introduction to digital forensics": ["T1003", "T1027"],
+    "linux forensics": ["T1059.004", "T1003"],
+    "user behavior forensics": ["T1078"],
+    "security incident reporting": [],   # process, not technique
+    "soc analyst": ["T1059", "T1003"],
+    "detecting windows attacks": ["T1059.001", "T1059.003", "T1003"],
+    # ---- advanced offensive / AD post-ex ------------------------------------
+    "dacl attacks": ["T1078", "T1098"],   # Valid Accounts / Account Manipulation
+    "ntlm relay": ["T1557.001", "T1003.001"],   # AitM: LLMNR/NBT-NS / LSASS Memory
+    "adcs attacks": ["T1649", "T1558"],   # Steal/Forge Auth Cert / Kerberos Ticket
+    "c2 operations": ["T1071.001", "T1071.004", "T1095"],   # Web/DNS/Non-App-Layer Protocol
+    "intro to c2": ["T1071.001"],
+    "sliver": ["T1071.001"],
+    # ---- supply chain / specialty ------------------------------------------
+    "supply chain attack": ["T1195"],   # Supply Chain Compromise
+    "modern web exploitation": ["T1190", "T1505.003"],
+    "advanced xss": ["T1190", "T1059.007"],
+    "csrf": ["T1190"],
+    "xss": ["T1190", "T1059.007"],
+    "parameter logic bugs": ["T1190"],
+    # ---- mobile (Mobile ATT&CK matrix) -------------------------------------
+    "android application static": ["T1418", "T1623"],   # Software Discovery / Command & Scripting Interpreter (Mobile)
+    "android application dynamic": ["T1418", "T1623"],
+    "wi-fi penetration testing": ["T1040", "T1110"],
+    # ---- programming-language modules (foundational for scripting) ---------
+    "introduction to c#": [],   # language module, no specific technique
+    # ---- additional general / non-offensive --------------------------------
+    "introduction to information security": [],
+    "intro to information security": [],
+    # ---- advanced offensive (round 3) --------------------------------------
+    "windows evasion": ["T1027", "T1055", "T1562"],   # Obfuscate / Process Injection / Impair Defenses
+    "evasion technique": ["T1027", "T1055", "T1562"],
+    "access token manipulation": ["T1134"],   # Access Token Manipulation
+    "binary fuzzing": ["T1203", "T1059"],
+    "windows lateral movement": ["T1021", "T1021.002", "T1550"],   # Remote Services / SMB / Use Alternate Auth Material
+    "lateral movement": ["T1021", "T1550"],
+    "malicious document analysis": ["T1204.002", "T1027"],   # User Execution: Malicious File / Obfuscation
+    "mssql": ["T1059.005", "T1190"],   # Visual Basic + SQL exec
+    "exchange": ["T1190", "T1078"],
+    "sccm attack": ["T1078", "T1190"],
+    "attacking graphql": ["T1190", "T1213"],
+    "graphql": ["T1190"],
+    "android penetration testing": ["T1418", "T1623"],
+    "attacking wpa": ["T1110", "T1040"],
+    "wpa/wpa2": ["T1110", "T1040"],
+    "evil twin": ["T1557", "T1110"],   # AitM
+    "captive portal": ["T1557", "T1110"],
+    "android forensics": ["T1003"],
+    "ai data attack": ["T1565"],   # Data Manipulation
+    "red teaming ai": [],   # process/methodology, not specific technique
+    "introduction to penetration testing": ["T1595", "T1018", "T1046"],
+    "winddbg": ["T1622"],   # Debugger Evasion (kept loose; it's a tool)
+    "windbg": ["T1622"],
+    "detection & opsec": ["T1027", "T1562"],
+    "opsec cyber range": ["T1027", "T1562"],
+    # Catch-all defensive flag for everything titled with a *blue* verb so we
+    # at least mark the demo as "defensive observation" instead of empty.
+    "detecting": ["T1059"],
+    "detection": ["T1059"],
+    # ---- round 4: more advanced offensive + tradecraft ---------------------
+    "attacking corporate wi-fi": ["T1110", "T1040", "T1557"],
+    "wi-fi password cracking": ["T1110", "T1040"],
+    "windows low level detectability": ["T1027", "T1055", "T1562"],
+    "windows api monitoring": ["T1106", "T1055"],   # Native API / Process Injection
+    "windows api hooking": ["T1574", "T1055"],   # Hijack Execution Flow
+    "wmi tradecraft": ["T1047"],   # Windows Management Instrumentation
+    "persistence tradecraft": ["T1547", "T1543"],   # Boot/Logon Autostart / Create or Modify System Process
+    "android attacks": ["T1418", "T1623"],
+    # ---- AI / LLM (MITRE ATLAS overlap; ATT&CK Enterprise has limited
+    # coverage so we use the closest enterprise IDs where applicable). The
+    # bulk of these stay empty because the academy module IS the source of
+    # the technique, not the consumer.
+    "llm output attacks": [],
+    "attacking ai": [],
+    "ai evasion": [],
+    "ai defense": [],
+    "ai privacy": [],
+    "fundamentals of ai": [],
+    "applications of ai in infosec": [],
+    "red teaming ai": [],
+    # ---- additional process / foundational (intentional empties) -----------
+    "introduction to c#": [],
+    "security incident reporting": [],
+    "intro to academy's purple modules": [],
+    "purple modules": [],
+    "introduction to penetration testing": ["T1595", "T1018", "T1046"],
 }
 
 

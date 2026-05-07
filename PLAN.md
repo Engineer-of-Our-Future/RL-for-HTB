@@ -95,6 +95,15 @@ The agent doesn't get a vague "be a pentester" objective — its action space, r
 | **Mobile**     | v0.2 (weeks 17–22) | 14 — same names as Enterprise but mobile-specific techniques | Android-focused (iOS dynamic instrumentation needs jailbroken devices we won't model). Tooling: ADB, Frida, MobSF, drozer, jadx, apktool. |
 | **ICS**        | v0.3 (weeks 23–28) | 12 — Initial Access, Execution, Persistence, Privilege Escalation, Evasion, Discovery, Lateral Movement, Collection, Command and Control, Inhibit Response Function, Impair Process Control, Impact | Industrial control / OT. Lab: OpenPLC, ConPot honeypot, GRFICSv2 simulator. Tools: modbus-cli, plcscan, smod, snap7-cli. |
 
+### Coverage status (delivered)
+
+- **Tool registry**: every tool YAML in `src/htbrl/tools/registry/` carries an `attack:` block; loader rejects missing entries (Phase 1 verification).
+- **Academy module mapping**: `src/htbrl/academy/mitre_mapping.py` maps academy module titles + descriptions to ATT&CK technique IDs via the `ACADEMY_MODULE_TECHNIQUES` keyword table. As of this delivery:
+  - **86 % of the 158 modules** in HTB Academy's catalog (as scraped from `/api/v2/modules`) get a non-empty technique list.
+  - **72 distinct ATT&CK technique IDs** are reachable across the academy curriculum.
+  - The remaining 21 uncovered modules are *intentionally* empty (process / methodology / foundational / language / AI-attack-domain modules where ATT&CK Enterprise has no direct technique IDs — those belong to MITRE ATLAS, which is out of scope here).
+  - Locked-in by `tests/academy/test_mitre_mapping.py::test_mapping_table_covers_offensive_themes_broadly` + `test_mapping_table_intentional_empties_stay_empty` + `test_distinct_technique_count_is_substantial` (≥ 50 distinct IDs guaranteed).
+
 ### Cross-cutting design rules
 
 1. **Every tool in every registry YAML carries an `attack:` block.** Required keys: `matrices` (subset of `[enterprise, mobile, ics]`), `tactics` (list of `TA0xxx` IDs), `techniques` (list of `Txxxx` or `Txxxx.xxx` sub-technique IDs). Loader rejects tools missing this block.

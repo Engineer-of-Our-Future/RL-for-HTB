@@ -324,3 +324,80 @@ def test_rejected_answer_records_attempt_but_not_success():
     # Attempted but not succeeded
     assert "T1083" in answer_turns[0].techniques_attempted
     assert answer_turns[0].techniques_succeeded == []
+
+
+# ---- regression: broad coverage of academy themes --------------------------
+
+
+def test_mapping_table_covers_offensive_themes_broadly():
+    """Locks in that the major offensive themes have entries in
+    ACADEMY_MODULE_TECHNIQUES. A future edit accidentally dropping a
+    section of the mapping fires this test.
+    """
+    expected = {
+        "linux fundamentals": "T1059.004",
+        "windows fundamentals": "T1059.001",
+        "network enumeration": "T1046",
+        "footprinting": "T1595.001",
+        "active directory": "T1558",
+        "kerberos": "T1558",
+        "buffer overflow": "T1203",
+        "password attacks": "T1110",
+        "file inclusion": "T1190",
+        "command injection": "T1059",
+        "sql injection": "T1190",
+        "metasploit": "T1059",
+        "ntlm relay": "T1557.001",
+        "lateral movement": "T1021",
+        "siem fundamentals": "T1078",
+        "threat hunting": "T1059",
+        "malware analysis": "T1027",
+        "javascript deobfusc": "T1027",
+        "file transfer": "T1105",
+        "tunneling": "T1572",
+    }
+    for kw, expect_id in expected.items():
+        techs = ACADEMY_MODULE_TECHNIQUES.get(kw, [])
+        assert expect_id in techs, (
+            f"keyword {kw!r} should yield {expect_id!r}, got {techs!r}"
+        )
+
+
+def test_mapping_table_intentional_empties_stay_empty():
+    """Process / foundational / AI-attack modules deliberately have empty
+    technique lists. This locks that in so a future edit doesn't tag them
+    with random techniques.
+    """
+    intentional_empties = [
+        "intro to academy",
+        "learning process",
+        "setting up",
+        "documentation & reporting",
+        "incident handling process",
+        "bug bounty hunting process",
+        "penetration testing process",
+        "fundamentals of ai",
+        "applications of ai in infosec",
+        "red teaming ai",
+        "ai evasion",
+        "ai defense",
+        "ai privacy",
+        "llm output attacks",
+    ]
+    for kw in intentional_empties:
+        techs = ACADEMY_MODULE_TECHNIQUES.get(kw, None)
+        assert techs is not None, f"keyword {kw!r} missing from table"
+        assert techs == [], f"keyword {kw!r} should be empty, got {techs!r}"
+
+
+def test_distinct_technique_count_is_substantial():
+    """The mapping table should produce coverage of at least 50 distinct
+    ATT&CK technique IDs across the academy curriculum. Sanity guard
+    against accidental table truncation.
+    """
+    all_ids: set[str] = set()
+    for techs in ACADEMY_MODULE_TECHNIQUES.values():
+        all_ids.update(techs)
+    assert len(all_ids) >= 50, (
+        f"only {len(all_ids)} distinct techniques in table; expected >= 50"
+    )
