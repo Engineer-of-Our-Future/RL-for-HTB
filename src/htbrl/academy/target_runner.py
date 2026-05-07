@@ -550,16 +550,19 @@ def probe_target_for_answer(
             runner, username, password,
             extra_paths=login_paths_hint,
         )
-        if cookie is not None:
-            json_body = bool(_re.search(
-                r"json\s+(post|request)|application/json",
-                question_prompt, _re.IGNORECASE,
-            ))
-            # Look for a specific endpoint in the prompt (e.g. /search.php)
-            m_ep = _re.search(r"['\"`](/[\w\-./]+\.[\w]{2,5})['\"`]", question_prompt)
-            search_endpoint = m_ep.group(1) if m_ep else None
-            # Try the prompted endpoint first, then any from code blocks.
-            for ep in [search_endpoint, *search_paths_hint, None]:
+        json_body = bool(_re.search(
+            r"json\s+(post|request)|application/json",
+            question_prompt, _re.IGNORECASE,
+        ))
+        # Look for a specific endpoint in the prompt (e.g. /search.php)
+        m_ep = _re.search(r"['\"`](/[\w\-./]+\.[\w]{2,5})['\"`]", question_prompt)
+        search_endpoint = m_ep.group(1) if m_ep else None
+        # Try in this order: cookie+endpoint, cookie+default paths, then
+        # Basic-Auth fallback (some academy boxes don't have a separate
+        # login flow - the search request itself takes credentials via
+        # the Authorization header).
+        for ep in [search_endpoint, *search_paths_hint, None]:
+            if cookie is not None:
                 flag = try_authenticated_search(
                     runner, cookie, query,
                     json_body=json_body, endpoint=ep,
@@ -567,10 +570,24 @@ def probe_target_for_answer(
                 if flag:
                     return (
                         flag,
-                        f"login admin/{password} -> cookie -> search '{query}' "
+                        f"login {username}/{password} -> cookie -> search '{query}' "
                         f"@ {ep or 'default-paths'} -> {flag}",
                         0.95,
                     )
+            # Basic Auth fallback - the credentials go directly on the
+            # search request, no prior login step.
+            flag = try_authenticated_search(
+                runner, None, query,
+                json_body=json_body, endpoint=ep,
+                basic_auth=(username, password),
+            )
+            if flag:
+                return (
+                    flag,
+                    f"basic-auth {username}/{password} on search '{query}' "
+                    f"@ {ep or 'default-paths'} -> {flag}",
+                    0.95,
+                )
 
     # -- Pattern 7: REST CRUD chain ------------------------------------------
     # "First, try to update any city's name to be 'flag'. Then, delete
@@ -714,21 +731,34 @@ _SEARCH_PARAM_NAMES = ("search", "q", "query", "keyword", "term")
 
 def try_authenticated_search(
     runner: "HttpTargetRunner",
-    cookie: str,
+    cookie: str | None,
     query: str,
     *,
     json_body: bool = False,
     endpoint: str | None = None,
+    basic_auth: tuple[str, str] | None = None,
 ) -> str | None:
-    """Search with a session cookie; return the first ``HTB{...}`` we find.
+    """Search with a session cookie OR Basic-Auth header; return any
+    ``HTB{...}`` flag found in the response.
 
-    If ``endpoint`` is supplied, only that path is tried (with both GET
-    + query-string and POST + body forms); otherwise we walk every path
-    in :data:`_SEARCH_PATHS`. Each path is tried with form-encoded body
-    AND JSON body (when ``json_body`` is True or as a fallback). If the
-    response body has an ``HTB{...}`` token, it's returned.
+    Two auth modes:
+      - ``cookie``: ``"name=value"`` Cookie header (set by ``try_form_login``).
+      - ``basic_auth``: ``(user, pass)`` tuple - sent via the standard
+        ``Authorization: Basic <base64(user:pass)>`` header.
+
+    Both can be supplied together (the request includes both); either
+    can be None. Each attempt walks the form / JSON / GET-querystring
+    combinations until one returns an ``HTB{...}`` token in the body.
     """
     paths = [endpoint] if endpoint else list(_SEARCH_PATHS)
+    auth_header = {}
+    if basic_auth is not None:
+        import base64 as _b64
+        creds_b64 = _b64.b64encode(
+            f"{basic_auth[0]}:{basic_auth[1]}".encode("utf-8")
+        ).decode("ascii")
+        auth_header["Authorization"] = "Basic " + creds_b64
+    cookie_header = {"Cookie": cookie} if cookie else {}
     for path in paths:
         for param in _SEARCH_PARAM_NAMES:
             data = {param: query}
@@ -740,7 +770,7 @@ def try_authenticated_search(
             else:
                 attempts.append(("POST_JSON", {"Content-Type": "application/json"}, _json.dumps(data)))
             for tag, hdrs, body in attempts:
-                merged = {"Cookie": cookie, **hdrs}
+                merged = {**cookie_header, **auth_header, **hdrs}
                 if tag == "GET":
                     resp = runner.request(
                         f"{path}?{urllib.parse.urlencode(data)}",
@@ -770,28 +800,44 @@ def try_crud_chain(
     magic_value: str = "flag",
     code_blocks: list[str] | None = None,
 ) -> str | None:
-    """Run a typical update -> delete -> search chain on a REST collection.
+    """Run an update -> delete -> search chain on a REST collection.
 
-    Tries each candidate collection (from ``code_blocks`` and the default
-    list) until one responds with a JSON list. For that collection:
-      1. Find the first item with an ``id`` field.
-      2. ``PUT`` (and fall back to ``PATCH``) with ``{"name": magic_value}``.
-      3. ``DELETE`` the second item to satisfy "delete any city".
-      4. ``GET`` the collection again and look for any object whose
-         ``name`` matches ``magic_value`` - return its ``HTB{...}``-bearing
-         field if any, or any ``HTB{...}`` in the full body.
+    Strategy hardened by live module-35 q-8-0 win:
+      1. Walk candidate collection paths (from ``code_blocks`` and the
+         default list).
+      2. For each collection that returns a JSON list, identify the
+         "name" field (usually ``name`` / ``city_name`` / ``title``) and
+         the per-item identifier path (``/<col>/<id>`` OR
+         ``/<col>/<name>``).
+      3. PUT (then PATCH fallback) the first item's name to
+         ``magic_value``.
+      4. DELETE a DIFFERENT item to satisfy "delete any" while ensuring
+         the count is now LESS than original (the q-8-0 hint pattern).
+      5. GET the magic-named record specifically (``/<col>/<magic>``)
+         and any ``HTB{...}`` token in the response is the answer. Also
+         look in non-name fields like ``country_name`` / ``description``
+         where the academy hides the flag.
     """
     cands: list[str] = list(_CRUD_COLLECTION_PATHS)
     if code_blocks:
         for blk in code_blocks:
-            for ep in _re.findall(r"/(?:api|v\d+)/[\w\-/]{1,60}", blk):
+            for ep in _re.findall(r"/(?:api(?:\.php)?|v\d+)/[\w\-/]{1,60}", blk):
                 ep = ep.split("?", 1)[0].rstrip("/")
+                # Path may be like /api.php/city/<name> - strip the
+                # trailing dynamic segment to get the collection root.
+                parts = ep.split("/")
+                if len(parts) >= 4:
+                    base = "/".join(parts[:-1])
+                    if base not in cands:
+                        cands.insert(0, base)
                 if ep not in cands:
                     cands.insert(0, ep)
     if resource_hint:
         cands.insert(0, f"/api/{resource_hint}")
         cands.insert(0, f"/{resource_hint}")
+    flag_re = _re.compile(r"HTB\{[^}]+\}")
     seen: set[str] = set()
+    name_keys = ("name", "city_name", "title", "label", "username")
     for collection in cands:
         if collection in seen:
             continue
@@ -799,24 +845,44 @@ def try_crud_chain(
         listing = runner.request(collection)
         if not (listing.ok and isinstance(listing.body_json, list)):
             continue
-        items = [it for it in listing.body_json if isinstance(it, dict) and "id" in it]
+        items = [it for it in listing.body_json if isinstance(it, dict)]
         if len(items) < 2:
             continue
-        first_id = items[0]["id"]
-        second_id = items[1]["id"]
-        # PUT then PATCH fallback.
+        # Discover which key is the "name".
+        name_key = next((k for k in name_keys if k in items[0]), None)
+        if name_key is None:
+            continue
+        first_name = items[0][name_key]
+        second_name = items[1][name_key]
+        # PUT/PATCH the first to magic_value. Try identifier-by-name AND
+        # by ``id`` field so we cover both styles.
+        ident = items[0].get("id", first_name)
         for verb in ("PUT", "PATCH"):
-            runner.request(
-                f"{collection}/{first_id}", method=verb,
-                headers={"Content-Type": "application/json"},
-                data=_json.dumps({"name": magic_value}),
-            )
-        runner.request(f"{collection}/{second_id}", method="DELETE")
-        # Search after the chain.
-        post_listing = runner.request(collection)
-        m = _re.search(r"HTB\{[^}]+\}", post_listing.body_text)
-        if m:
-            return m.group(0)
+            for url in (
+                f"{collection}/{first_name}".lower(),
+                f"{collection}/{ident}",
+            ):
+                runner.request(
+                    url, method=verb,
+                    headers={"Content-Type": "application/json"},
+                    data=_json.dumps({name_key: magic_value}),
+                )
+        # DELETE a different item.
+        for url in (
+            f"{collection}/{second_name}".lower(),
+            f"{collection}/{items[1].get('id', second_name)}",
+        ):
+            runner.request(url, method="DELETE")
+        # GET the magic-named record + scan for HTB{...} in any field.
+        for url in (
+            f"{collection}/{magic_value}",
+            f"{collection}?{name_key}={magic_value}",
+            collection,
+        ):
+            resp = runner.request(url)
+            m = flag_re.search(resp.body_text)
+            if m:
+                return m.group(0)
     return None
 
 
@@ -886,20 +952,65 @@ def extract_html_endpoints(html: str) -> list[str]:
 
 
 def _discover_flag_via_html_endpoints(runner: "HttpTargetRunner") -> str | None:
-    """For "Network-tab" questions: fetch /, parse URLs, probe each for HTB{}."""
-    home = runner.request("/")
-    if not home.body_text:
-        return None
-    eps = extract_html_endpoints(home.body_text)
-    # Also try a small set of common flag-endpoint guesses.
-    eps = list(dict.fromkeys(
-        eps + ["/flag", "/flag.php", "/flag.txt", "/flag.json", "/api/flag"]
-    ))
-    for ep in eps[:10]:
-        resp = runner.request(ep)
-        m = _re.search(r"HTB\{[^}]+\}", resp.body_text)
+    """For "Network-tab" questions: fetch /, follow script/style refs, probe.
+
+    Strategy:
+      1. Fetch ``/`` - capture every href / src / fetch / XHR URL.
+      2. ALSO fetch each ``.js`` / ``.json`` / ``.css`` file it references
+         and parse those for additional ``fetch(...)`` / ``url('...')`` /
+         flag-shaped paths. (The academy's "Network tab" question often
+         hides the flag URL inside a script.js that the page loads
+         asynchronously - the target's `/` is just a static skeleton.)
+      3. Sort by name: anything containing "flag" first.
+      4. Probe up to ~20 of those for ``HTB{...}``.
+      5. Fall back to common guesses + retry once with a second fetch
+         (some targets randomize the flag URL per page load).
+    """
+    flag_re = _re.compile(r"HTB\{[^}]+\}")
+    for refresh in range(2):
+        home = runner.request("/")
+        if not home.body_text:
+            return None
+        # First pass: flag in HTML body itself.
+        m = flag_re.search(home.body_text)
         if m:
             return m.group(0)
+        eps = list(extract_html_endpoints(home.body_text))
+        # Follow JS/JSON/CSS references and harvest THEIR endpoints +
+        # any inline ``flag_*.txt`` URLs.
+        sub_eps: list[str] = []
+        for ep in eps[:8]:
+            if ep.endswith((".js", ".json", ".css", ".html")):
+                sub = runner.request(ep)
+                # Match fetch('...'), .open('GET','...'), or any flag_*
+                # token directly.
+                for m2 in _re.finditer(
+                    r"""(?:fetch|\.open)\([^)]*['"]([^'"]+)['"]""",
+                    sub.body_text,
+                ):
+                    sub_eps.append(m2.group(1))
+                for m2 in _re.finditer(
+                    r"""['"`]?(/[\w./\-]*flag[\w./\-]*)['"`]?""",
+                    sub.body_text,
+                ):
+                    sub_eps.append(m2.group(1))
+                # The flag MIGHT live in the JS file itself (rare).
+                m3 = flag_re.search(sub.body_text)
+                if m3:
+                    return m3.group(0)
+        all_eps = list(dict.fromkeys(eps + sub_eps))
+        # Bias toward flag-shaped names FIRST.
+        all_eps.sort(key=lambda u: 0 if "flag" in u.lower() else 1)
+        candidates = list(dict.fromkeys(
+            all_eps + ["/flag", "/flag.php", "/flag.txt", "/flag.json", "/api/flag"]
+        ))
+        for ep in candidates[:20]:
+            if not ep.startswith("/"):
+                ep = "/" + ep
+            resp = runner.request(ep)
+            m = flag_re.search(resp.body_text)
+            if m:
+                return m.group(0)
     return None
 
 
