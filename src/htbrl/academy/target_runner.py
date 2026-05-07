@@ -239,10 +239,15 @@ __all__ = [
     "HttpResponse",
     "HttpTargetRunner",
     "extract_header_value",
+    "extract_html_endpoints",
+    "extract_http_method_hint",
     "extract_json_field",
     "extract_curl_commands",
     "probe_code_blocks_for_flag",
     "probe_target_for_answer",
+    "try_authenticated_search",
+    "try_crud_chain",
+    "try_form_login",
 ]
 
 
@@ -492,25 +497,461 @@ def probe_target_for_answer(
                 0.85,
             )
 
-    # -- Pattern 4: JSON-field walk over hinted endpoints -------------------
-    # When the prompt mentions a quoted/back-ticked field name AND the
-    # section's code blocks suggest /api/something, probe each endpoint
-    # and return the first matching field value.
-    m = _re.search(r"['\"`]([a-zA-Z_][\w]{0,30})['\"`]", question_prompt)
-    if m:
-        field_name = m.group(1)
-        endpoints = set()
-        for blk in code_blocks[:6]:
-            for ep in _re.findall(r"/(?:api|v\d+)/[\w\-/]{1,80}", blk):
-                endpoints.add(ep)
-        for ep in list(endpoints)[:5]:
-            resp = runner.request(ep)
-            extracted = extract_json_field(resp, question_prompt)
-            if extracted:
-                return (
-                    extracted,
-                    f"GET {ep} -> JSON field {field_name!r} = {extracted!r}",
-                    0.70,
-                )
+    # -- Pattern 5: HTTP method (case-sensitive) -----------------------------
+    # "What is the HTTP method used while intercepting the request?
+    # (case-sensitive)" - the answer is a verb token like GET/POST/PUT/...
+    # The section's code blocks usually show the captured request, e.g.
+    # ``POST /search HTTP/1.1`` or ``Method: POST``.
+    if _re.search(
+        r"(http\s+method|method\s+used|request\s+method|verb\s+used)",
+        question_prompt, _re.IGNORECASE,
+    ):
+        verb = extract_http_method_hint(code_blocks)
+        if verb:
+            return (verb, f"section code-block contained {verb!r}", 0.90)
 
+    # -- Pattern 6: authenticated search (login -> cookie -> search) ---------
+    # "Authenticate to ... user 'admin' and password 'admin', use cURL
+    # to search for 'flag' and obtain the flag."
+    creds = _extract_credentials(question_prompt)
+    if creds is not None:
+        username, password = creds
+        # The search query is whatever the prompt asks us to search for;
+        # default to "flag" since most academy auth-search tasks are flag
+        # discovery.
+        m = _re.search(
+            r"search\s+for\s+['\"`]?([\w\-]{1,40})['\"`]?",
+            question_prompt, _re.IGNORECASE,
+        )
+        query = m.group(1) if m else "flag"
+        # Pull login + search endpoints out of the section's cURL examples
+        # so we use the *literally taught* paths (the academy's curriculum
+        # IS our endpoint hint).
+        login_paths_hint = _paths_from_code_blocks(
+            code_blocks, hint=("login", "auth", "signin"),
+        )
+        search_paths_hint = _paths_from_code_blocks(
+            code_blocks, hint=("search", "find", "query"),
+        )
+        cookie = try_form_login(
+            runner, username, password,
+            extra_paths=login_paths_hint,
+        )
+        if cookie is not None:
+            json_body = bool(_re.search(
+                r"json\s+(post|request)|application/json",
+                question_prompt, _re.IGNORECASE,
+            ))
+            # Look for a specific endpoint in the prompt (e.g. /search.php)
+            m_ep = _re.search(r"['\"`](/[\w\-./]+\.[\w]{2,5})['\"`]", question_prompt)
+            search_endpoint = m_ep.group(1) if m_ep else None
+            # Try the prompted endpoint first, then any from code blocks.
+            for ep in [search_endpoint, *search_paths_hint, None]:
+                flag = try_authenticated_search(
+                    runner, cookie, query,
+                    json_body=json_body, endpoint=ep,
+                )
+                if flag:
+                    return (
+                        flag,
+                        f"login admin/{password} -> cookie -> search '{query}' "
+                        f"@ {ep or 'default-paths'} -> {flag}",
+                        0.95,
+                    )
+
+    # -- Pattern 7: REST CRUD chain ------------------------------------------
+    # "First, try to update any city's name to be 'flag'. Then, delete
+    # any city. Once done, search for a city named 'flag' to get the flag."
+    if _re.search(
+        r"(update|modify|change).*?(name|value).*?(flag).*?(delete|remove)|"
+        r"(delete|remove).*?(then|after).*?(search|get|fetch).*?(flag)",
+        question_prompt, _re.IGNORECASE | _re.DOTALL,
+    ):
+        m = _re.search(
+            r"\b(?:update|modify|delete|remove)\s+(?:any\s+|the\s+)?(\w+?)(?:'s|\s+name)",
+            question_prompt, _re.IGNORECASE,
+        )
+        resource = m.group(1).rstrip("s") + "s" if m else None
+        flag = try_crud_chain(
+            runner, resource_hint=resource,
+            magic_value="flag", code_blocks=code_blocks,
+        )
+        if flag:
+            return (flag, f"CRUD chain on {resource or '?'} -> {flag}", 0.95)
+
+    # -- Pattern 8: HTML resource discovery ("Network tab") ------------------
+    # "Use the Network tab in the browser devtools to see what requests
+    # are made by the page, and find the request to the flag."
+    if _re.search(
+        r"(network\s+tab|devtools|developer\s+tools|browser\s+inspect)",
+        question_prompt, _re.IGNORECASE,
+    ):
+        flag = _discover_flag_via_html_endpoints(runner)
+        if flag:
+            return (flag, f"HTML/JS endpoint discovery -> {flag}", 0.95)
+
+    # -- Pattern 9: JSON-field walk over hinted endpoints (last resort) -----
+    # When the prompt mentions a quoted/back-ticked field name AND the
+    # section's code blocks suggest /api/X endpoints, probe each and
+    # return the first matching field value. Lower-priority on purpose:
+    # earlier patterns are more specific. Only fires when prompt language
+    # is question-y ("what is the value of X" / "report the value") and
+    # avoids triggering on action-verb prompts (those go through patterns
+    # 6-7 above).
+    if _re.search(
+        r"(report|what is|return)\s+(?:the\s+)?(?:value|content|data)\b",
+        question_prompt, _re.IGNORECASE,
+    ):
+        m = _re.search(r"['\"`]([a-zA-Z_][\w]{0,30})['\"`]", question_prompt)
+        if m:
+            field_name = m.group(1)
+            endpoints = set()
+            for blk in code_blocks[:6]:
+                for ep in _re.findall(r"/(?:api|v\d+)/[\w\-/]{1,80}", blk):
+                    endpoints.add(ep)
+            for ep in list(endpoints)[:5]:
+                resp = runner.request(ep)
+                extracted = extract_json_field(resp, question_prompt)
+                if extracted:
+                    return (
+                        extracted,
+                        f"GET {ep} -> JSON field {field_name!r} = {extracted!r}",
+                        0.70,
+                    )
+
+    return None
+
+
+# ---- multi-step helpers (login + cookie + search, CRUD, etc) ----------------
+
+
+# Common login form paths the academy uses across modules.
+_LOGIN_PATHS = (
+    "/login.php", "/login", "/signin", "/auth/login", "/api/login",
+    "/api/auth/login", "/users/login", "/auth", "/admin/login",
+)
+# Form-field name pairs for username/password (common variants).
+_LOGIN_FIELD_PAIRS = (
+    ("username", "password"),
+    ("user", "pass"),
+    ("email", "password"),
+    ("login", "password"),
+    ("name", "password"),
+)
+
+
+def try_form_login(
+    runner: "HttpTargetRunner",
+    username: str,
+    password: str,
+    *,
+    extra_paths: list[str] | None = None,
+) -> str | None:
+    """POST credentials to common login paths, return the session cookie.
+
+    Tries each path in :data:`_LOGIN_PATHS` (plus any user-supplied
+    ``extra_paths``) with each common username/password field-name pair.
+    Returns the response's ``Set-Cookie`` (just the cookie pair, no
+    attributes) when one of them succeeds with a 2xx/3xx, otherwise None.
+
+    "Success" here = the response set a cookie. Even if the login page
+    returns 200 with an error message we'd still get a cookie if the
+    backend sets a session cookie (the academy's intentionally-leaky
+    auth flow that some modules teach).
+    """
+    paths = list(_LOGIN_PATHS) + list(extra_paths or [])
+    for path in paths:
+        for user_field, pass_field in _LOGIN_FIELD_PAIRS:
+            data = {user_field: username, pass_field: password}
+            resp = runner.request(path, method="POST", data=data)
+            if not resp.ok:
+                # Try once more as JSON (some endpoints reject form data).
+                resp = runner.request(
+                    path, method="POST",
+                    headers={"Content-Type": "application/json"},
+                    data=_json.dumps(data),
+                )
+            if not resp.ok:
+                continue
+            cookie = _extract_session_cookie(resp.headers.get("set-cookie", ""))
+            if cookie:
+                return cookie
+    return None
+
+
+def _extract_session_cookie(set_cookie_header: str) -> str | None:
+    """Return ``"name=value"`` for the first cookie in a Set-Cookie header."""
+    if not set_cookie_header:
+        return None
+    # Set-Cookie may be multiple comma-joined values OR one with attrs.
+    # Take the first ``name=value`` pair before any ``;``.
+    first = set_cookie_header.split(",")[0].strip()
+    pair = first.split(";")[0].strip()
+    if "=" in pair:
+        return pair
+    return None
+
+
+# Common search endpoints + parameter names.
+_SEARCH_PATHS = (
+    "/search.php", "/search", "/api/search", "/find", "/api/find",
+)
+_SEARCH_PARAM_NAMES = ("search", "q", "query", "keyword", "term")
+
+
+def try_authenticated_search(
+    runner: "HttpTargetRunner",
+    cookie: str,
+    query: str,
+    *,
+    json_body: bool = False,
+    endpoint: str | None = None,
+) -> str | None:
+    """Search with a session cookie; return the first ``HTB{...}`` we find.
+
+    If ``endpoint`` is supplied, only that path is tried (with both GET
+    + query-string and POST + body forms); otherwise we walk every path
+    in :data:`_SEARCH_PATHS`. Each path is tried with form-encoded body
+    AND JSON body (when ``json_body`` is True or as a fallback). If the
+    response body has an ``HTB{...}`` token, it's returned.
+    """
+    paths = [endpoint] if endpoint else list(_SEARCH_PATHS)
+    for path in paths:
+        for param in _SEARCH_PARAM_NAMES:
+            data = {param: query}
+            attempts: list[tuple[str, dict[str, str], Any]] = []
+            attempts.append(("GET", {}, None))  # filled below
+            attempts.append(("POST_FORM", {}, data))
+            if json_body:
+                attempts.insert(0, ("POST_JSON", {"Content-Type": "application/json"}, _json.dumps(data)))
+            else:
+                attempts.append(("POST_JSON", {"Content-Type": "application/json"}, _json.dumps(data)))
+            for tag, hdrs, body in attempts:
+                merged = {"Cookie": cookie, **hdrs}
+                if tag == "GET":
+                    resp = runner.request(
+                        f"{path}?{urllib.parse.urlencode(data)}",
+                        method="GET", headers=merged,
+                    )
+                elif tag == "POST_FORM":
+                    resp = runner.request(path, method="POST", headers=merged, data=data)
+                else:
+                    resp = runner.request(path, method="POST", headers=merged, data=body)
+                m = _re.search(r"HTB\{[^}]+\}", resp.body_text)
+                if m:
+                    return m.group(0)
+    return None
+
+
+# Common REST collection paths + magic identifiers.
+_CRUD_COLLECTION_PATHS = (
+    "/api/cities", "/cities", "/api/items", "/api/users", "/api/products",
+    "/api/posts", "/api/v1/cities", "/api/v1/items",
+)
+
+
+def try_crud_chain(
+    runner: "HttpTargetRunner",
+    *,
+    resource_hint: str | None = None,
+    magic_value: str = "flag",
+    code_blocks: list[str] | None = None,
+) -> str | None:
+    """Run a typical update -> delete -> search chain on a REST collection.
+
+    Tries each candidate collection (from ``code_blocks`` and the default
+    list) until one responds with a JSON list. For that collection:
+      1. Find the first item with an ``id`` field.
+      2. ``PUT`` (and fall back to ``PATCH``) with ``{"name": magic_value}``.
+      3. ``DELETE`` the second item to satisfy "delete any city".
+      4. ``GET`` the collection again and look for any object whose
+         ``name`` matches ``magic_value`` - return its ``HTB{...}``-bearing
+         field if any, or any ``HTB{...}`` in the full body.
+    """
+    cands: list[str] = list(_CRUD_COLLECTION_PATHS)
+    if code_blocks:
+        for blk in code_blocks:
+            for ep in _re.findall(r"/(?:api|v\d+)/[\w\-/]{1,60}", blk):
+                ep = ep.split("?", 1)[0].rstrip("/")
+                if ep not in cands:
+                    cands.insert(0, ep)
+    if resource_hint:
+        cands.insert(0, f"/api/{resource_hint}")
+        cands.insert(0, f"/{resource_hint}")
+    seen: set[str] = set()
+    for collection in cands:
+        if collection in seen:
+            continue
+        seen.add(collection)
+        listing = runner.request(collection)
+        if not (listing.ok and isinstance(listing.body_json, list)):
+            continue
+        items = [it for it in listing.body_json if isinstance(it, dict) and "id" in it]
+        if len(items) < 2:
+            continue
+        first_id = items[0]["id"]
+        second_id = items[1]["id"]
+        # PUT then PATCH fallback.
+        for verb in ("PUT", "PATCH"):
+            runner.request(
+                f"{collection}/{first_id}", method=verb,
+                headers={"Content-Type": "application/json"},
+                data=_json.dumps({"name": magic_value}),
+            )
+        runner.request(f"{collection}/{second_id}", method="DELETE")
+        # Search after the chain.
+        post_listing = runner.request(collection)
+        m = _re.search(r"HTB\{[^}]+\}", post_listing.body_text)
+        if m:
+            return m.group(0)
+    return None
+
+
+def _extract_credentials(prompt: str) -> tuple[str, str] | None:
+    """Pull (username, password) from a prompt describing the credentials.
+
+    Recognizes:
+      - "user 'admin' and password 'admin'"
+      - "username 'X' password 'Y'"
+      - "credentials: 'X' / 'Y'"
+    """
+    p = prompt
+    m = _re.search(
+        r"user(?:name)?\s*['\"`]([^'\"`]{1,40})['\"`]"
+        r".{0,40}?"
+        r"(?:and\s+)?password\s*['\"`]([^'\"`]{1,80})['\"`]",
+        p, _re.IGNORECASE | _re.DOTALL,
+    )
+    if m:
+        return (m.group(1), m.group(2))
+    m = _re.search(
+        r"credentials\s*[:=]\s*['\"`]([^'\"`]{1,40})['\"`]\s*[/:]\s*['\"`]([^'\"`]{1,80})['\"`]",
+        p, _re.IGNORECASE,
+    )
+    if m:
+        return (m.group(1), m.group(2))
+    return None
+
+
+def extract_html_endpoints(html: str) -> list[str]:
+    """Pull href / src / fetch / XHR endpoints out of an HTML response.
+
+    Used by the "Network tab in browser devtools" question pattern: when
+    the prompt asks the student to find which request the page makes, we
+    fetch the main page, parse out every URL it references, and probe
+    each for a flag. Filters out off-target absolute URLs and the well-
+    known noisy paths (favicon, etc).
+    """
+    if not html:
+        return []
+    out: set[str] = set()
+    for m in _re.finditer(
+        r"""(?:href|src|action)\s*=\s*['"]([^'"]+)['"]""", html
+    ):
+        out.add(m.group(1))
+    for m in _re.finditer(
+        r"""fetch\(\s*['"]([^'"]+)['"]""", html
+    ):
+        out.add(m.group(1))
+    for m in _re.finditer(
+        r"""\.open\(\s*['"][A-Z]+['"]\s*,\s*['"]([^'"]+)['"]""", html
+    ):
+        out.add(m.group(1))
+    # Filter to relative / same-host paths and drop noise.
+    cleaned: list[str] = []
+    skip_substrings = ("favicon", "googleapis", "cdnjs", "//cdn.")
+    for u in out:
+        if any(s in u for s in skip_substrings):
+            continue
+        if u.startswith("http://") or u.startswith("https://"):
+            # Off-host absolute URL; skip.
+            continue
+        if not u.startswith("/"):
+            u = "/" + u
+        cleaned.append(u)
+    return cleaned
+
+
+def _discover_flag_via_html_endpoints(runner: "HttpTargetRunner") -> str | None:
+    """For "Network-tab" questions: fetch /, parse URLs, probe each for HTB{}."""
+    home = runner.request("/")
+    if not home.body_text:
+        return None
+    eps = extract_html_endpoints(home.body_text)
+    # Also try a small set of common flag-endpoint guesses.
+    eps = list(dict.fromkeys(
+        eps + ["/flag", "/flag.php", "/flag.txt", "/flag.json", "/api/flag"]
+    ))
+    for ep in eps[:10]:
+        resp = runner.request(ep)
+        m = _re.search(r"HTB\{[^}]+\}", resp.body_text)
+        if m:
+            return m.group(0)
+    return None
+
+
+def _paths_from_code_blocks(
+    code_blocks: list[str], *, hint: tuple[str, ...] = (),
+) -> list[str]:
+    """Pull /paths out of a section's code blocks.
+
+    When ``hint`` is supplied, only paths whose URL contains one of the
+    hint substrings are returned (case-insensitive). Used to surface
+    endpoints the academy's curriculum is teaching the student to hit
+    (e.g. ``/login.php``, ``/search.php``, ``/api/cities``) directly out
+    of the section's cURL examples.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for blk in code_blocks or []:
+        for m in _re.finditer(r"https?://[^\s'\"`]+(/[\w\-./?=&%]*)?", blk):
+            full = m.group(0)
+            url_path = "/"
+            mp = _re.match(r"^https?://[^/]+(/[^?\s]*)?", full)
+            if mp and mp.group(1):
+                url_path = mp.group(1)
+            # Drop query strings; we re-add them ourselves.
+            url_path = url_path.split("?", 1)[0]
+            if not url_path or url_path == "/":
+                continue
+            if hint:
+                low = url_path.lower()
+                if not any(h in low for h in hint):
+                    continue
+            if url_path not in seen:
+                seen.add(url_path)
+                out.append(url_path)
+        # Also pull bare /paths that appear without a host (relative refs).
+        for m in _re.finditer(r"\b(/(?:[\w\-]+/)*[\w\-]+\.\w{2,5}|/api/[\w\-/]+)", blk):
+            p = m.group(1)
+            if hint:
+                low = p.lower()
+                if not any(h in low for h in hint):
+                    continue
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+    return out
+
+
+def extract_http_method_hint(code_blocks: list[str]) -> str | None:
+    """Find a case-sensitive HTTP method verb in the section's code blocks.
+
+    Looks for ``METHOD /path HTTP/1.1`` or ``Method: METHOD`` patterns
+    (intercepted-request / Burp / devtools format). Returns the first
+    match, preserving the original casing (HTB academy questions are
+    typically case-sensitive on the verb).
+    """
+    verbs = ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS")
+    for blk in code_blocks or []:
+        for line in (blk or "").splitlines():
+            line = line.strip()
+            for v in verbs:
+                # "POST /api/login HTTP/1.1"
+                if line.startswith(v + " ") and "HTTP/" in line:
+                    return v
+                # "Method: POST"
+                m = _re.match(r"^method\s*[:=]\s*([A-Z]+)\b", line, _re.IGNORECASE)
+                if m and m.group(1).upper() in verbs:
+                    return m.group(1).upper()
     return None
