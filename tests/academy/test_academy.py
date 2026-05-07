@@ -546,6 +546,99 @@ def test_orchestrator_auto_submit_completes_module(tmp_path: Path):
     assert state.cubes_balance == mod.cubes_reward
 
 
+def test_orchestrator_unlock_gate_blocks_second_module_in_study_only(tmp_path: Path):
+    """In study_only mode the cube balance never changes; with the gate's
+    cube-refresh check on, the orchestrator should attempt module #1, then
+    refuse to open module #2 even though more eligible modules exist."""
+    m1 = AcademyModule(
+        id="m1", title="general 1", tier=0, category="general",
+        sections=[
+            AcademySection(
+                id="s1", title="t", body_text="ls lists files",
+                questions=[AcademyQuestion(
+                    id="m1.q1", prompt="Which command lists files?",
+                    type=QuestionType.MULTIPLE_CHOICE,
+                    multiple_choice_options=["ls", "pwd", "cat"],
+                )],
+            ),
+        ],
+    )
+    m2 = AcademyModule(
+        id="m2", title="general 2", tier=0, category="general",
+        sections=[
+            AcademySection(
+                id="s2", title="t", body_text="cd changes directory",
+                questions=[AcademyQuestion(
+                    id="m2.q1", prompt="Which command changes directory?",
+                    type=QuestionType.MULTIPLE_CHOICE,
+                    multiple_choice_options=["cd", "ls", "pwd"],
+                )],
+            ),
+        ],
+    )
+    state = ProgressState(user_id="u", cubes_balance=0)
+    sess = MockAcademySession(modules=[m1, m2], state=state, study_only=True)
+    sess.login(AcademyCredentials("u", "p"))
+    learner = AutoLearner(
+        session=sess,
+        cfg=OrchestratorConfig(
+            study_only=True, auto_demo_dir=tmp_path,
+            max_modules_per_run=5,  # enough headroom; gate should bound it.
+            require_all_answered_before_unlock=True,
+            require_cube_refresh_before_unlock=True,
+        ),
+    )
+    result = learner.run()
+    # Module 1 attempted, module 2 NOT attempted (gate closed because no cube delta).
+    assert "m1" in result.modules_attempted
+    assert "m2" not in result.modules_attempted
+    # Two gate decisions recorded: pre-m1 (open) and pre-m2 (closed).
+    assert len(result.unlock_gates) >= 2
+    assert result.unlock_gates[0].allowed is True
+    assert result.unlock_gates[1].allowed is False
+    assert any("gate" in e.lower() for e in result.errors)
+
+
+def test_orchestrator_unlock_gate_relaxed_walks_multiple_modules(tmp_path: Path):
+    """With both gate-relax flags off, the orchestrator walks consecutive
+    modules even when no submissions land - useful for offline demo harvesting."""
+    m1 = AcademyModule(
+        id="m1", title="general 1", tier=0, category="general",
+        sections=[AcademySection(
+            id="s1", title="t", body_text="ls",
+            questions=[AcademyQuestion(
+                id="m1.q1", prompt="?", type=QuestionType.MULTIPLE_CHOICE,
+                multiple_choice_options=["a", "b"],
+            )],
+        )],
+    )
+    m2 = AcademyModule(
+        id="m2", title="general 2", tier=0, category="general",
+        sections=[AcademySection(
+            id="s2", title="t", body_text="cd",
+            questions=[AcademyQuestion(
+                id="m2.q1", prompt="?", type=QuestionType.MULTIPLE_CHOICE,
+                multiple_choice_options=["a", "b"],
+            )],
+        )],
+    )
+    state = ProgressState(user_id="u", cubes_balance=0)
+    sess = MockAcademySession(modules=[m1, m2], state=state, study_only=True)
+    sess.login(AcademyCredentials("u", "p"))
+    learner = AutoLearner(
+        session=sess,
+        cfg=OrchestratorConfig(
+            study_only=True, auto_demo_dir=tmp_path,
+            max_modules_per_run=5,
+            require_all_answered_before_unlock=False,
+            require_cube_refresh_before_unlock=False,
+        ),
+    )
+    result = learner.run()
+    assert "m1" in result.modules_attempted
+    assert "m2" in result.modules_attempted
+
+
 def test_orchestrator_pauses_on_low_confidence(tmp_path: Path):
     """Force the answerer below the manual_review_threshold so we get a manual_review item."""
     mod = AcademyModule(

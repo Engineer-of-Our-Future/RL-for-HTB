@@ -20,6 +20,10 @@ from __future__ import annotations
 import time
 from typing import Iterable
 
+from htbrl.academy.mitre_mapping import (
+    techniques_for_module,
+    techniques_for_section,
+)
 from htbrl.academy.page_models import (
     AcademyAnswer,
     AcademyModule,
@@ -39,6 +43,9 @@ def answer_to_demo_turn(
     section_title: str = "",
     section_body: str = "",
     inline_code: list[str] | None = None,
+    *,
+    module_techniques: list[str] | None = None,
+    section_techniques: list[str] | None = None,
 ) -> DemoTurn:
     """Render one Q+A as a DemoTurn the BC trainer can learn from.
 
@@ -70,6 +77,11 @@ def answer_to_demo_turn(
     # Per-question reward bonus reflects the academy's own +cubes / +HP signal.
     if accepted and (question.cubes_reward or question.hp_reward):
         reward += 0.01 * question.cubes_reward + 0.001 * question.hp_reward
+
+    # ATT&CK tagging: an accepted answer demonstrates the technique was
+    # internalized; a rejected/skipped answer still counts as "attempted" so
+    # coverage metrics see negative samples too.
+    section_tags = list(section_techniques) if section_techniques else []
     return DemoTurn(
         obs_text=obs_text,
         action_tool_id=-1,        # synthetic; not in the registry
@@ -83,12 +95,17 @@ def answer_to_demo_turn(
         },
         action_render=f"academy_answer({answer.method}): {answer.answer_text!r}",
         reward=reward,
-        techniques_attempted=[],
-        techniques_succeeded=[],
+        techniques_attempted=section_tags,
+        techniques_succeeded=section_tags if accepted else [],
     )
 
 
-def section_read_turn(section, module_title: str = "") -> DemoTurn:
+def section_read_turn(
+    section,
+    module_title: str = "",
+    *,
+    module_techniques: list[str] | None = None,
+) -> DemoTurn:
     """Emit one synthetic 'I read this theory section' turn.
 
     Even sections with zero questions are valuable training data - the user
@@ -96,6 +113,11 @@ def section_read_turn(section, module_title: str = "") -> DemoTurn:
     sometimes!". A section_read turn captures the full section body, inline
     code spans, and bullet-list highlights into ``obs_text`` so BC can learn
     to attend to theory content even when no question follows.
+
+    ATT&CK tagging: when ``module_techniques`` is provided we narrow it to
+    the section via ``techniques_for_section`` and report it as
+    ``techniques_attempted``. Reading theory does not by itself "succeed" at
+    any technique, so ``techniques_succeeded`` stays empty.
     """
     parts: list[str] = []
     parts.append(
@@ -122,6 +144,11 @@ def section_read_turn(section, module_title: str = "") -> DemoTurn:
     obs_text = "\n\n".join(parts)
     # Small positive reward: engaging with theory is valuable behavior, even
     # without a downstream question. Cap so it can't dominate the env reward.
+    section_tags: list[str]
+    if module_techniques:
+        section_tags = techniques_for_section(section, module_techniques)
+    else:
+        section_tags = []
     return DemoTurn(
         obs_text=obs_text,
         action_tool_id=-1,
@@ -137,7 +164,7 @@ def section_read_turn(section, module_title: str = "") -> DemoTurn:
         },
         action_render=f"academy_read_section: {section.title!r}",
         reward=0.02,
-        techniques_attempted=[],
+        techniques_attempted=section_tags,
         techniques_succeeded=[],
     )
 
@@ -194,9 +221,18 @@ def session_to_demonstration(
     user_flag = False
     root_flag = False
 
+    # Precompute the module-level ATT&CK technique list once - section
+    # narrowing reuses it for every section.
+    module_techniques = techniques_for_module(module)
+
     for section in module.sections:
+        section_tags = techniques_for_section(section, module_techniques)
         if include_section_read_turns:
-            turns.append(section_read_turn(section, module_title=module.title))
+            turns.append(section_read_turn(
+                section,
+                module_title=module.title,
+                module_techniques=module_techniques,
+            ))
         for question in section.questions:
             for mod_id, ans, accepted in submissions_by_qid.get(question.id, []):
                 cmd_turn = sandbox_cmd_to_demo_turn(ans, accepted)
@@ -207,6 +243,8 @@ def session_to_demonstration(
                     section_title=section.title,
                     section_body=section.body_text,
                     inline_code=section.inline_code,
+                    module_techniques=module_techniques,
+                    section_techniques=section_tags,
                 ))
                 if accepted:
                     foothold = True
@@ -233,6 +271,10 @@ def session_to_demonstration(
         "ts": time.time(),
         "n_questions": len(module.all_questions),
         "n_attempts": sum(1 for s in submissions if s[0] == module.id),
+        # Module-level ATT&CK coverage so downstream tools (curriculum
+        # weighting, coverage report) can see what this demo is teaching
+        # without re-deriving it from the per-turn lists.
+        "module_techniques": list(module_techniques),
     }
     if extra_metadata:
         md.update(extra_metadata)

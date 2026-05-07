@@ -140,6 +140,103 @@ def test_category_rank_constants_present():
     }
 
 
+# ---- unlock gate ------------------------------------------------------------
+
+
+def _gate_module(qids: list[str]) -> AcademyModule:
+    """Helper: build a module with N text questions whose ids match ``qids``."""
+    return AcademyModule(
+        id="m1", title="x", tier=0, category="general",
+        sections=[
+            AcademySection(
+                id="s1", title="x", body_text="x",
+                questions=[
+                    AcademyQuestion(id=qid, prompt="?", type=QuestionType.TEXT)
+                    for qid in qids
+                ],
+            ),
+        ],
+    )
+
+
+def test_unlock_gate_no_current_module_is_open():
+    from htbrl.academy.curriculum import check_unlock_gate
+    g = check_unlock_gate(None, set(), 0, 0)
+    assert g.allowed is True
+    assert "first run" in g.reason
+
+
+def test_unlock_gate_closed_when_questions_unanswered():
+    from htbrl.academy.curriculum import check_unlock_gate
+    mod = _gate_module(["q1", "q2", "q3"])
+    g = check_unlock_gate(mod, {"q1"}, cube_balance_before=10, cube_balance_after=20)
+    assert g.allowed is False
+    assert g.questions_unanswered == 2
+    assert "2/3" in g.reason
+
+
+def test_unlock_gate_closed_when_cube_balance_unchanged():
+    from htbrl.academy.curriculum import check_unlock_gate
+    mod = _gate_module(["q1"])
+    g = check_unlock_gate(mod, {"q1"}, cube_balance_before=42, cube_balance_after=42)
+    assert g.allowed is False
+    assert g.cube_balance_delta == 0
+    assert "unchanged" in g.reason
+
+
+def test_unlock_gate_open_when_all_answered_and_cubes_changed():
+    from htbrl.academy.curriculum import check_unlock_gate
+    mod = _gate_module(["q1", "q2"])
+    g = check_unlock_gate(mod, {"q1", "q2"}, cube_balance_before=10, cube_balance_after=20)
+    assert g.allowed is True
+    assert g.cube_balance_delta == 10
+    assert g.questions_unanswered == 0
+
+
+def test_unlock_gate_open_for_theory_only_module_even_with_no_cube_change():
+    """A module with zero questions should pass the gate trivially - there's
+    nothing to be rewarded for, so the cube-refresh check doesn't apply."""
+    from htbrl.academy.curriculum import check_unlock_gate
+    mod = AcademyModule(id="m1", title="x", tier=0, category="general", sections=[])
+    g = check_unlock_gate(mod, set(), 50, 50)
+    assert g.allowed is True
+
+
+def test_unlock_gate_relaxed_flags_open_partial_walks():
+    """With both relax flags off, the gate is open even with 0/N answered."""
+    from htbrl.academy.curriculum import check_unlock_gate
+    mod = _gate_module(["q1", "q2"])
+    g = check_unlock_gate(
+        mod, set(), cube_balance_before=10, cube_balance_after=10,
+        require_all_answered=False, require_cube_refresh=False,
+    )
+    assert g.allowed is True
+
+
+def test_next_module_returns_none_when_gate_closed():
+    from htbrl.academy.curriculum import check_unlock_gate, next_module
+    mods = [
+        AcademyModule(id="g1", title="x", tier=0, category="general"),
+        AcademyModule(id="g2", title="x", tier=0, category="general"),
+    ]
+    state = ProgressState(user_id="u", cubes_balance=100)
+    closed_gate = check_unlock_gate(
+        _gate_module(["q1"]), set(), cube_balance_before=0, cube_balance_after=0,
+    )
+    assert next_module(mods, state, unlock_gate=closed_gate) is None
+
+
+def test_next_module_picks_next_when_gate_open():
+    from htbrl.academy.curriculum import check_unlock_gate, next_module
+    mods = [
+        AcademyModule(id="g1", title="x", tier=0, category="general"),
+        AcademyModule(id="g2", title="x", tier=0, category="general"),
+    ]
+    state = ProgressState(user_id="u", cubes_balance=100)
+    open_gate = check_unlock_gate(None, set(), 0, 0)
+    assert next_module(mods, state, unlock_gate=open_gate).id == "g1"
+
+
 # ---- LabWalkthroughBuilder --------------------------------------------------
 
 

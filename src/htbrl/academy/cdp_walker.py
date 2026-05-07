@@ -457,6 +457,43 @@ def is_lab_flag_question(q: AcademyQuestion) -> bool:
     return any(h in p for h in _LAB_FLAG_HINTS)
 
 
+_CUBE_BALANCE_JS = r"""
+(function(){
+  // The HTB Academy header shows the cube balance as a small <button> whose
+  // text is exactly the integer (e.g. ``"50"``). It's the first standalone-
+  // integer button on the page; the "Reviews" / "Last Updated" buttons have
+  // multi-line text that won't match this regex.
+  const btns = Array.from(document.querySelectorAll('button'));
+  for (const b of btns) {
+    const t = (b.innerText || '').trim();
+    if (/^\d+$/.test(t) && t.length >= 1 && t.length <= 6) {
+      return parseInt(t, 10);
+    }
+  }
+  return null;
+})()
+"""
+
+
+def read_cube_balance(cdp: CDPClient) -> int | None:
+    """Return the cube-balance integer from the academy header, or None.
+
+    Used by the wizard's post-walk gate-readiness check: if the balance
+    didn't change after a question-bearing module, the academy's reward
+    signal hasn't landed yet and opening a new module is unsafe.
+    """
+    try:
+        v = cdp.evaluate(_CUBE_BALANCE_JS)
+    except Exception:
+        return None
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def already_answered_flags(scraped: dict) -> list[bool]:
     """Per-question 'is this already accepted on the page' booleans.
 
@@ -507,6 +544,7 @@ __all__ = [
     "navigate_and_wait",
     "open_cdp",
     "pick_academy_tab",
+    "read_cube_balance",
     "scrape_section",
     "submit_answer_in_dom",
 ]

@@ -52,9 +52,11 @@ from htbrl.academy.cdp_walker import (
     go_to_first_section,
     is_lab_flag_question,
     open_cdp,
+    read_cube_balance,
     scrape_section,
     submit_answer_in_dom,
 )
+from htbrl.academy.curriculum import check_unlock_gate
 from htbrl.academy.page_models import (
     AcademyAnswer,
     AcademyModule,
@@ -222,7 +224,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(f"[wizard] attached to {ws_url}")
 
+    cubes_before: int | None = None
     try:
+        # Capture cube balance BEFORE we attempt anything, for the unlock-gate
+        # readiness report at the end of the run.
+        cubes_before = read_cube_balance(cdp)
+        if cubes_before is not None:
+            print(f"[wizard] cubes_balance before run: {cubes_before}")
+
         entered, url = enter_module(cdp, args.module_id)
         print(f"[wizard] entered module: {url}  (entered={entered})")
         if not entered:
@@ -394,6 +403,15 @@ def main(argv: list[str] | None = None) -> int:
 
     except KeyboardInterrupt:
         print("\n[wizard] interrupted; saving demo with progress so far")
+
+    # Re-read cube balance BEFORE closing the websocket so the gate
+    # readiness check has fresh data.
+    cubes_after: int | None = None
+    try:
+        cubes_after = read_cube_balance(cdp)
+        if cubes_after is not None:
+            print(f"[wizard] cubes_balance after run: {cubes_after}  "
+                  f"(delta {cubes_after - (cubes_before or 0):+d})")
     finally:
         try:
             ws.close()
@@ -430,6 +448,28 @@ def main(argv: list[str] | None = None) -> int:
     save_demonstration(demo, out)
     print(f"[wizard] wrote demo -> {out}")
     print(f"[wizard]   sections={len(sections)} questions={n_q} turns={len(demo.turns)}")
+
+    # -- unlock gate readiness report --------------------------------------------
+    # Per the operator rule "open new module only if all questions are answered
+    # and cube balance are updated", we run the gate at end-of-walk and report
+    # whether the next module would be safe to open. This is informational for
+    # the wizard (single-module per invocation); the orchestrator enforces the
+    # check programmatically before each new module open.
+    attempted_qids = {a.question_id for _, a, _ in submissions}
+    gate = check_unlock_gate(
+        current_module=module,
+        answered_question_ids=attempted_qids,
+        cube_balance_before=cubes_before if cubes_before is not None else 0,
+        cube_balance_after=cubes_after if cubes_after is not None else (cubes_before or 0),
+        require_all_answered=True,
+        require_cube_refresh=(cubes_before is not None and cubes_after is not None),
+    )
+    print(f"[wizard] unlock gate: allowed={gate.allowed} - {gate.reason}")
+    if gate.allowed:
+        print("[wizard] safe to start the next module.")
+    else:
+        print("[wizard] NOT safe to start a new module yet "
+              "(refresh state and rerun, or relax gate flags).")
     return 0
 
 
