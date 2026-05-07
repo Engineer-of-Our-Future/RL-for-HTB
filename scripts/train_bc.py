@@ -145,13 +145,39 @@ def main(argv: list[str] | None = None) -> int:
     tool_id_by_name = {t.name: vocab.id_of(t.name) for t in vocab.tools}
     tokenizer = ByteLevelBPE.load(args.tokenizer_path)
     print(f"  tokenizer vocab_size = {tokenizer.vocab_size}")
-    print(f"  tools                = {vocab.n_tools}")
+    print(f"  registry tools       = {vocab.n_tools}")
 
     # Dataset
     raw_ds = DemoDataset(args.demo_root)
     if args.matrix is not None:
         raw_ds = raw_ds.filter(matrix=args.matrix)
     print(f"  loaded {len(raw_ds)} demos")
+
+    # Phase 5b academy demos use synthetic tool names (academy_answer,
+    # academy_section_read, academy_cheat_sheet, academy_module_intro,
+    # academy_sandbox_cmd) that aren't in the registry - they're synthetic
+    # markers, not registry-rendered shell commands. We extend
+    # ``tool_id_by_name`` with whatever synthetic tools appear in the demos
+    # so BC can still learn the "given this state, predict the academy
+    # action class" head. The action class is meaningful: read theory vs.
+    # answer vs. run sandbox cmd is the kind of decision a curriculum-
+    # following agent has to make.
+    extra_synthetic = sorted({
+        t.action_tool_name
+        for demo in raw_ds
+        for t in demo.turns
+        if t.action_tool_name not in tool_id_by_name
+    })
+    next_id = max(tool_id_by_name.values(), default=-1) + 1
+    for name in extra_synthetic:
+        tool_id_by_name[name] = next_id
+        next_id += 1
+    if extra_synthetic:
+        print(f"  + {len(extra_synthetic)} synthetic tool(s) from demos: "
+              f"{', '.join(extra_synthetic)}")
+    n_tools_total = len(tool_id_by_name)
+    print(f"  total tool head    = {n_tools_total}")
+
     ds = BCExampleDataset(
         raw_ds, tokenizer, max_seq_len=args.max_seq_len, tool_id_by_name=tool_id_by_name
     )
@@ -169,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     # Model
     cfg = PolicyConfig(
         vocab_size=tokenizer.vocab_size,
-        n_tools=vocab.n_tools,
+        n_tools=n_tools_total,
         n_matrices=3,
         d_model=args.d_model,
         n_layers=args.n_layers,

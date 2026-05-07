@@ -44,6 +44,10 @@ preferences.db-journal
 # Tokenizer artifacts (regenerable)
 tokenizer/vocab.bpe
 tokenizer/merges.txt
+tokenizer/*.json
+
+# Generated training corpus (regenerable from data/auto_demos/)
+data/corpus/
 
 # Hydra
 outputs/
