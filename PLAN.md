@@ -334,46 +334,70 @@ Round-trip on 10 k random shell-output samples: `decode(encode(x)) == x` byte-pe
 
 ---
 
-## Phase 5b — HTB Academy auto-learner (cross-cutting; Weeks 6–8 in parallel)
+## Phase 5b — HTB Academy auto-learner ✅ DELIVERED (Weeks 6–8)
 
-**Goal:** Automatically work through HTB Academy modules in tier order — read the module, run the per-section sandbox, attempt the questions — and emit `Demonstration` files that BC training (Phase 5) can mix in alongside human-collected demos. **The agent does the academy's curriculum first; only after academy progression does it move to lab boxes.** This was added by user request mid-project to give the agent a structured curriculum + a passive data source.
+**Goal (delivered):** Automatically work through HTB Academy modules in tier order — read the module, harvest its cheat sheet, run the per-section sandbox, attempt the questions — and emit `Demonstration` files that BC training (Phase 5) can mix in alongside human-collected demos. **The agent does the academy's curriculum first; only after academy progression does it move to lab boxes.**
 
-### Architecture
-- `htbrl.academy.session.AcademySession` is the abstract transport. `MockAcademySession` ships in-tree for tests + dry-runs; a real `PlaywrightAcademySession` is intentionally NOT bundled (browser binaries are heavy, and the responsible thing is to leave the network-touching code as a user-supplied extension).
-- `htbrl.academy.answerer.HeuristicAnswerer` answers each question via:
-  - **MC**: Jaccard overlap between option tokens and section body.
-  - **TEXT**: scan the body for sentences whose tokens overlap the prompt; extract the most "answer-shaped" tail or a quoted/back-ticked span.
-  - **FLAG**: pick the section's most flag-likely command, run it through `SandboxRunner` (an `SSHSession` adapter for the academy sandbox), and regex for `HTB{...}` or a single-token line.
-- Below `manual_review_threshold` (default 0.3) the orchestrator pauses and records a `ManualReviewItem` for human resolution rather than guessing.
-- Every run writes one `Demonstration` per module to `data/auto_demos/`. The synthetic tool name `academy_answer` (and `academy_sandbox_cmd` when a flag was derived from a sandbox command) keeps these turns clearly distinguishable from real-env demos in the BC trainer.
+### Architecture (as built)
+- **Transport:** `htbrl.academy.session.AcademySession` is the abstract transport. `MockAcademySession` ships in-tree for tests + dry-runs. The *real* transport is a Chrome DevTools Protocol attach to a user-launched Chrome (no Playwright launch markers — bypasses Cloudflare bot detection); plumbing in `htbrl.academy.cdp_walker` is the single source of truth for both single-module and multi-module walkers.
+- **Answerer:** `htbrl.academy.answerer.HeuristicAnswerer` is now a *ranked-candidate* proposer:
+  - `propose(question, section, *, top_n=N, module=...)` returns a list of candidates ordered by confidence, deduped by `answer_text`.
+  - Per-type generators fire in parallel: acronym expansion, "how many" bullet count, port/version/path/filename extraction, inline-code-ranked (by surrounding-sentence overlap), sentence-anchor inline code, bullet-head match, quoted/backticked spans, lone-inline fallback, and **cheat-sheet-row match** (highest-precision; uses the module-level cheat sheet description→command lookup).
+  - Junk filter rejects single-char / punctuation-only / English-stopword candidates so BC isn't taught to answer `'h'` / `'.'` / `'/'`.
+  - Legacy `answer()` returns `propose()[0]`.
+- **Cheat sheet harvest:** `cdp_walker.fetch_module_via_api(cdp, mid)` calls `GET /api/v2/modules/<id>` from inside the authenticated page; `parse_cheatsheet_markdown` turns the markdown table into structured rows (`[{"command": "ls", "description": "lists files"}, ...]`). The same fetch also yields `prelude`, `conclusion`, `takeaways`, `name`.
+- **Demo turn order** (per module, BC-friendly): `academy_module_intro` (prelude+takeaways+conclusion) → `academy_cheat_sheet` (canonical command/desc table) → for each section: `academy_section_read` (theory) → `academy_answer` × N (Q&A); plus `academy_sandbox_cmd` when a flag was derived from a sandbox command. Every turn carries `techniques_attempted` / `techniques_succeeded` from `htbrl.academy.mitre_mapping`.
+- **Wizard mode** (`scripts/htb_academy_wizard.py`): operator-in-the-loop. Model proposes top-N candidates per question; operator can accept top, pick alt, type custom, or skip. Auto-submit fills the input + clicks Submit via DOM; **lab-flag-shaped questions are NEVER auto-submitted** per the project rule (would risk an account ban).
+- **Below-threshold path:** below `manual_review_threshold` (default 0.3) the orchestrator records a `ManualReviewItem` rather than guessing.
+- Every run writes one `Demonstration` per module to `data/auto_demos/`. Synthetic tool names (`academy_module_intro`, `academy_cheat_sheet`, `academy_section_read`, `academy_answer`, `academy_sandbox_cmd`) keep these turns distinguishable from real-env demos in the BC trainer.
+
+### Unlock gate (operator's rule)
+The academy charges cubes to *open* a module, so opening a second one before the first is finished wastes the research account's budget. `curriculum.check_unlock_gate(current_module, answered_qids, cubes_before, cubes_after)` enforces *"open new module only if all questions are answered AND cube balance are updated"*. Both halves are independently toggleable. The orchestrator runs the gate before each new module open; the wizard runs it once at end-of-walk and prints a safe-to-proceed verdict.
 
 ### Modes
 | Mode | Behavior | Default? |
 | ---- | -------- | -------- |
 | `study_only` | Read content, run sandbox, log demos. **No POSTs.** | ✅ Yes |
-| `auto_submit` | Actually submits answers when confidence ≥ threshold. | ❌ Opt-in: `--enable-auto-submit --i-accept-academy-tos-risk` |
+| `auto_submit` | Wizard fills + clicks Submit when top candidate's confidence ≥ `--auto-confidence`. Lab flags excluded. | ❌ Opt-in: `--auto-submit` |
 
 **ToS warning.** Auto-submitting on someone's HTB Academy account to farm cubes/XP is a gray-zone use of an educational platform and may violate HTB's Terms of Service. The default is `study_only`. The submit path exists for users who explicitly accept the risk on a research account.
 
-### Critical files
-- `src/htbrl/academy/page_models.py` — dataclasses (`AcademyModule`, `AcademySection`, `AcademyQuestion`, `AcademyAnswer`, `AcademySandbox`, `ProgressState`, `QuestionType`).
+### Critical files (delivered)
+- `src/htbrl/academy/page_models.py` — `AcademyModule` (with `cheat_sheet`, `prelude`, `conclusion`, `takeaways`, `category`, `path_ids`), `AcademySection`, `AcademyQuestion`, `AcademyAnswer`, `AcademySandbox`, `ProgressState`, `QuestionType`.
 - `src/htbrl/academy/session.py` — `AcademySession` ABC + `MockAcademySession` + redacted `AcademyCredentials`.
-- `src/htbrl/academy/answerer.py` — `HeuristicAnswerer`.
+- `src/htbrl/academy/answerer.py` — `HeuristicAnswerer` with ranked `propose()` API + cheat-sheet matcher + junk filter.
+- `src/htbrl/academy/cdp_walker.py` — CDP plumbing: `open_cdp`, `fetch_module_via_api`, `parse_cheatsheet_markdown`, `enter_module`, `go_to_first_section`, `scrape_section`, `click_next_and_advance`, `submit_answer_in_dom`, `read_cube_balance`, `is_lab_flag_question`.
 - `src/htbrl/academy/sandbox.py` — `SandboxRunner` (adapts `SSHSession`).
-- `src/htbrl/academy/curriculum.py` — `next_module` (tier + cubes ordering, prereq enforcement).
-- `src/htbrl/academy/orchestrator.py` — `AutoLearner` main loop with `OrchestratorConfig`.
-- `src/htbrl/academy/auto_demo_writer.py` — academy session log → `Demonstration`.
-- `scripts/htb_academy.py` — CLI.
+- `src/htbrl/academy/curriculum.py` — `next_module`, `check_unlock_gate`, `classify_module`, path-aware ordering.
+- `src/htbrl/academy/mitre_mapping.py` — `ACADEMY_MODULE_TECHNIQUES` keyword→ATT&CK table + `techniques_for_module` / `techniques_for_section`.
+- `src/htbrl/academy/orchestrator.py` — `AutoLearner` main loop with gate enforcement + per-module dedupe.
+- `src/htbrl/academy/auto_demo_writer.py` — `module_intro_turn`, `cheat_sheet_turn`, `section_read_turn`, `answer_to_demo_turn`, `sandbox_cmd_to_demo_turn`, `session_to_demonstration`.
+- `src/htbrl/academy/walkthrough.py` — `LabWalkthroughBuilder` (renders demos as Markdown for operator review).
+- `scripts/htb_academy.py` — original CLI (mock transport).
+- `scripts/htb_academy_login_check.py` — multi-mode login probe (CDP-attach, manual, no-login).
+- `scripts/htb_academy_run.py` — single-module study-only walker against live academy.
+- `scripts/htb_academy_wizard.py` — single-module operator-in-the-loop walker with optional auto-submit.
+- `scripts/htb_academy_walk_all.py` — multi-module driver: walks every owned/in_progress module, gate-checked.
+- `scripts/htb_academy_list_modules.py` — discovery CLI (table of owned/in_progress/locked + walked status).
+- `scripts/academy_coverage.py` — per-demo coverage report (sections, questions, theory KB, MITRE techniques, method tags).
+- `scripts/start_chrome_for_htb.ps1` — launches user's Chrome with `--remote-debugging-port=9222`.
 - `configs/academy/academy_default.yaml` — Hydra config.
 
-### Progression rule (this is the user's directive)
-1. **Modules first.** The agent works through the academy curriculum before any lab box.
-2. **Cubes track unlock.** After each completed module, the orchestrator refreshes `ProgressState`, sees the new cubes balance, and `next_module` returns the next eligible module.
-3. **Labs after academy.** Only once the curriculum is exhausted does the orchestrator pivot to real `HTBEnv` rollouts (Phase 4). This phase boundary lives in the top-level training script — Phase 5b owns the academy half.
+### Progression rule (delivered)
+1. **Modules first.** The agent walks the academy curriculum before any lab box. Owned modules are sorted by `(category_rank, tier, cubes_to_unlock, id)` — general → offensive → defensive → other.
+2. **Unlock gate.** After each module attempt, the orchestrator refreshes state, runs `check_unlock_gate`, and only opens the next module when all questions are answered AND the cube balance has updated.
+3. **Labs after academy.** Once the curriculum is exhausted (or the operator decides), the top-level training script pivots to real `HTBEnv` rollouts (Phase 4). Phase 5b owns the academy half; the labs half is the next-up work.
 
-### Verification
-- `pytest tests/academy/`: 27 tests covering the dataclasses, mock session lifecycle, answerer for each question type, curriculum eligibility & ordering, orchestrator end-to-end on a fixture (study-only writes a demo without mutating state; auto-submit completes a module and updates cubes), and auto-demo-writer turn shape.
-- `python scripts/htb_academy.py --transport mock --max-modules 1` runs end-to-end against the bundled fixture and writes `data/auto_demos/academy_m1.msgpack.gz`.
+### Verification (delivered)
+- `pytest tests/academy/`: **127+ tests** covering: dataclasses, mock session lifecycle, ranked-candidate answerer for every question type + cheat-sheet matcher + junk filter, curriculum eligibility / ordering / unlock gate, orchestrator end-to-end (study-only + auto-submit + multi-module gate enforcement), auto-demo-writer turn shape (intro + cheat + section_read + answer + sandbox_cmd), MITRE mapping, demo coverage CLI, and wizard safety guards (lab-flag detection, auto-submit refusal).
+- Real-academy walks completed for every module the research account owns:
+  - **Module 9** "Learning Process" — 20 sections, 0 questions, 21 turns, 75.6 KB theory.
+  - **Module 15** "Intro to Academy" — 8 sections, 0 questions, 10 turns (intro + cheat + sections), 19.4 KB.
+  - **Module 18** "Linux Fundamentals" — 30 sections, 26 questions, 58 turns, 256.7 KB. Cheat sheet: 72 rows. ATT&CK: T1018, T1057, T1059.004, T1083.
+  - **Module 87** "Setting Up" — 22 sections, 2 questions, 25 turns, 107.8 KB.
+- `python scripts/htb_academy_list_modules.py` shows every module with state + cost.
+- `python scripts/academy_coverage.py` shows the demo set: 5 demos, 90+ section_read turns, 28 answer turns, 4 distinct ATT&CK techniques tagged.
+- `python scripts/htb_academy_walk_all.py` walks every owned module with gate enforcement.
 
 ---
 
