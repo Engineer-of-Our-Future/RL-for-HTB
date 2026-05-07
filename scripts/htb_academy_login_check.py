@@ -22,6 +22,7 @@ selectors actually work.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -48,6 +49,107 @@ def _redacted_email(s: str) -> str:
     return f"{user[:2]}***@{host}"
 
 
+def _run_cdp_attach(cdp_endpoint: str, cookies_path: Path, shots_dir: Path) -> int:
+    """CDP-attach mode: connect to a Chrome the user launched themselves.
+
+    Workflow:
+      1. User runs scripts/start_chrome_for_htb.ps1 - launches Chrome with
+         --remote-debugging-port=9222 + a dedicated profile dir.
+      2. User logs in to HTB normally (Google OAuth works because Chrome is
+         user-launched, no Playwright automation markers visible to Google or
+         Cloudflare).
+      3. User runs this script with HTBRL_ACADEMY_CDP set.
+      4. We attach via CDP, find the academy tab, poll until it's on
+         academy.hackthebox.com/app/*, save cookies, exit.
+    """
+    import time
+
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        try:
+            browser = p.chromium.connect_over_cdp(cdp_endpoint)
+        except Exception as exc:
+            print(f"ERROR: could not connect to {cdp_endpoint}: {exc}", file=sys.stderr)
+            print("Did you run scripts/start_chrome_for_htb.ps1 first?", file=sys.stderr)
+            return 5
+
+        if not browser.contexts:
+            print("ERROR: connected but no browser contexts. Open a tab in Chrome "
+                  "and navigate to https://academy.hackthebox.com/app/dashboard.",
+                  file=sys.stderr)
+            return 5
+
+        ctx = browser.contexts[0]
+        # Find or create an academy page.
+        academy_page = None
+        for page in ctx.pages:
+            try:
+                if "hackthebox.com" in page.url:
+                    academy_page = page
+                    break
+            except Exception:
+                continue
+        if academy_page is None:
+            academy_page = ctx.new_page()
+            academy_page.goto("https://academy.hackthebox.com/app/dashboard")
+
+        print(f"[cdp] attached. Current URL: {academy_page.url}")
+        print("[cdp] If you're not logged in yet, log in NOW in the Chrome window.")
+        print("[cdp] Polling until you reach academy.hackthebox.com/app/*  (10 min cap).")
+
+        deadline = time.time() + 600.0
+        last_url = ""
+        authed = False
+        while time.time() < deadline:
+            try:
+                cur = academy_page.url
+            except Exception:
+                cur = ""
+            if cur != last_url:
+                print(f"[cdp]   nav -> {cur}")
+                last_url = cur
+            on_academy_app = (
+                "academy.hackthebox.com/app/" in cur
+                or "academy.hackthebox.com/dashboard" in cur
+            )
+            if on_academy_app:
+                # Probe for an authenticated marker. If still on a login screen
+                # within /app/* (unlikely), keep polling.
+                try:
+                    has_login_form = academy_page.locator(
+                        "#loginEmail, input[name='email'][type='email']"
+                    ).count() > 0
+                except Exception:
+                    has_login_form = False
+                if not has_login_form:
+                    authed = True
+                    print(f"[cdp] authenticated. URL={cur}")
+                    break
+            time.sleep(1.0)
+
+        if not authed:
+            print("[cdp] timed out waiting for academy/app URL. Re-run after you "
+                  "complete login.", file=sys.stderr)
+
+        # Save the storage_state from the connected context. NB: connect_over_cdp's
+        # default context can save cookies via ctx.storage_state.
+        try:
+            state = ctx.storage_state()
+            cookies_path.write_text(json.dumps(state), encoding="utf-8")
+            print(f"[cdp] saved cookies -> {cookies_path}")
+        except Exception as exc:
+            print(f"[cdp] saving cookies failed: {exc}", file=sys.stderr)
+
+        # Don't close the user's browser - just disconnect.
+        try:
+            _shot(academy_page, shots_dir / "06_cdp_after_login.png", "cdp-after-login")
+        except Exception:
+            pass
+
+    return 0 if authed else 4
+
+
 def _find_system_chrome() -> str | None:
     """Auto-detect a system Chrome (or Edge) install on Windows."""
     for candidate in (
@@ -72,13 +174,20 @@ def _shot(page, dest: Path, label: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     no_login = os.environ.get("HTBRL_ACADEMY_NO_LOGIN", "0") == "1"
+    manual_login = os.environ.get("HTBRL_ACADEMY_MANUAL_LOGIN", "0") == "1"
+    cdp_endpoint = os.environ.get("HTBRL_ACADEMY_CDP", "")
     user = os.environ.get("HTB_ACADEMY_USER", "")
     pw = os.environ.get("HTB_ACADEMY_PASS", "")
-    if not no_login and not (user and pw):
-        print("ERROR: HTB_ACADEMY_USER and HTB_ACADEMY_PASS env vars are required.",
-              file=sys.stderr)
-        print("       (set HTBRL_ACADEMY_NO_LOGIN=1 for a chromium-launch smoke test)",
-              file=sys.stderr)
+    if not no_login and not manual_login and not cdp_endpoint and not (user and pw):
+        print("ERROR: no auth method configured. Choose one:", file=sys.stderr)
+        print("  HTBRL_ACADEMY_CDP=http://127.0.0.1:9222   (recommended; "
+              "attach to user-launched Chrome, no auth via Playwright)", file=sys.stderr)
+        print("  HTBRL_ACADEMY_MANUAL_LOGIN=1              (log in by hand in "
+              "the Playwright window)", file=sys.stderr)
+        print("  HTB_ACADEMY_USER + HTB_ACADEMY_PASS       (auto-fill the form; "
+              "Cloudflare typically blocks)", file=sys.stderr)
+        print("  HTBRL_ACADEMY_NO_LOGIN=1                  (chromium-launch smoke "
+              "test only)", file=sys.stderr)
         return 2
 
     headless = os.environ.get("HTBRL_ACADEMY_HEADLESS", "1") != "0"
@@ -91,6 +200,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[check] cookies         : {cookies_path}")
     print(f"[check] screenshots dir : {shots_dir}")
     print(f"[check] headless        : {headless}")
+    if cdp_endpoint:
+        print(f"[check] mode            : CDP attach -> {cdp_endpoint}")
+        return _run_cdp_attach(cdp_endpoint, cookies_path, shots_dir)
 
     # Optional: use the user's installed Chrome instead of Playwright's chromium
     # build (sometimes resolves Cloudflare false positives, but we do NOT layer
@@ -100,7 +212,6 @@ def main(argv: list[str] | None = None) -> int:
     if chrome_path:
         print(f"[check] using system Chrome at {chrome_path}")
 
-    manual_login = os.environ.get("HTBRL_ACADEMY_MANUAL_LOGIN", "0") == "1"
     if manual_login:
         print("[check] HTBRL_ACADEMY_MANUAL_LOGIN=1 -> you log in manually in the "
               "browser window; the script will save cookies once you reach the dashboard")
@@ -155,26 +266,55 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[check] step 2: login form present in DOM = {login_form_present}")
 
         if login_form_present and manual_login:
-            # Hand the wheel to the human. We just wait for them to log in
-            # successfully (= login form disappears). No keystrokes, no
-            # bot-evasion patches, just a normal browser they drive.
+            # Hand the wheel to the human. We poll until the URL is back on
+            # academy.hackthebox.com (or app.hackthebox.com) AND no login form
+            # is present - this catches users who go through Google/Github
+            # OAuth, where the form-gone signal alone fires too early
+            # (browser is mid-OAuth at accounts.google.com).
             print("=" * 64)
             print(" MANUAL LOGIN MODE")
             print(" 1. The browser window in front of you is on the HTB SSO page.")
-            print(" 2. Log in normally - solve any Cloudflare challenge.")
-            print(" 3. Once you reach the academy dashboard, this script will")
-            print("    auto-detect it and save cookies. Then quit on its own.")
-            print(" 4. Up to 5 minutes timeout. Ctrl+C to abort.")
+            print(" 2. Log in normally - email/password OR Sign in with Google /")
+            print("    Github / LinkedIn. Solve any Cloudflare challenge that")
+            print("    appears.")
+            print(" 3. Land on the HTB academy dashboard (URL should contain")
+            print("    'academy.hackthebox.com/app/'). The script will detect")
+            print("    that, save cookies, and exit on its own.")
+            print(" 4. Timeout: 10 minutes. Ctrl+C to abort.")
             print("=" * 64)
-            try:
-                page.wait_for_function(
-                    "() => !document.querySelector('#loginEmail') && "
-                    "!document.querySelector('input[name=\"email\"]')",
-                    timeout=300_000,
+
+            import time
+            deadline = time.time() + 600.0
+            authed = False
+            last_url_logged = ""
+            while time.time() < deadline:
+                try:
+                    cur = page.url
+                except Exception:
+                    cur = ""
+                if cur != last_url_logged:
+                    print(f"[check]   nav -> {cur}")
+                    last_url_logged = cur
+                # Authentication signal: we're back on academy + no login form.
+                on_academy_app = (
+                    "academy.hackthebox.com/app" in cur
+                    or "app.hackthebox.com" in cur
+                    or "academy.hackthebox.com/dashboard" in cur
                 )
-                print("[check] manual login detected (form gone). Saving cookies.")
-            except Exception as exc:
-                print(f"[check] manual login timed out: {exc}")
+                form_gone = page.locator(
+                    "#loginEmail, input[name='email'][type='email']"
+                ).count() == 0
+                if on_academy_app and form_gone:
+                    authed = True
+                    print(f"[check]   authed=True, URL={cur}")
+                    break
+                time.sleep(1.0)
+
+            if not authed:
+                print("[check] manual login timed out. The browser may still be in "
+                      "an intermediate OAuth state. Re-run when you've completed "
+                      "the login.")
+
             try:
                 ctx.storage_state(path=str(cookies_path))
                 print(f"[check] saved cookies -> {cookies_path}")
@@ -183,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
             _shot(page, shots_dir / "06_after_manual_login.png", "after-manual-login")
             ctx.close()
             browser.close()
-            return 0
+            return 0 if authed else 4
 
         if login_form_present:
             print(f"[check] step 2: SSO login form expected at {page.url}")
