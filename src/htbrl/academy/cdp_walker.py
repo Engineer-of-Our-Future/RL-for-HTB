@@ -534,6 +534,85 @@ def read_cube_balance(cdp: CDPClient) -> int | None:
         return None
 
 
+_UNLOCK_BUTTON_JS = r"""
+(function(){
+    // The "Unlock Module - N Cubes" button on the module landing page.
+    // HTB renders it whenever module.state === 'locked' and the user has
+    // enough cubes. Match by prefix "Unlock Module" so the cube-count
+    // suffix doesn't trip exact-match.
+    const btns = Array.from(document.querySelectorAll('button'));
+    const cand = btns.find(b => /^Unlock\s+Module\b/i.test((b.innerText||'').trim()));
+    if (!cand) return {clicked: false, why: 'no Unlock Module button'};
+    if (cand.disabled) return {clicked: false, why: 'unlock button disabled'};
+    cand.click();
+    return {clicked: true, text: (cand.innerText||'').trim()};
+})()
+"""
+
+
+_CONFIRM_UNLOCK_JS = r"""
+(function(){
+    // Some HTB modules pop a confirmation dialog ("Are you sure you want
+    // to spend N cubes?") with a primary button containing "Unlock" or
+    // "Confirm". Click it if present.
+    const btns = Array.from(document.querySelectorAll('button'));
+    const cand = btns.find(b => {
+        const t = (b.innerText||'').trim();
+        return /^(Unlock|Confirm|Yes|Continue)\b/i.test(t)
+            && !/cancel/i.test(t);
+    });
+    if (cand) { cand.click(); return 'clicked: ' + (cand.innerText||'').trim(); }
+    return 'no confirm dialog';
+})()
+"""
+
+
+def unlock_module(cdp: CDPClient, module_id: int | str, *,
+                  poll_seconds: float = 8.0) -> tuple[bool, str]:
+    """Spend cubes to unlock a locked module via the academy UI.
+
+    The operator's standing rule (set 2026-05-07 in conversation) is "you can
+    always open new modules, don't ask for manual unlocking". This helper
+    encapsulates the "Unlock Module - N Cubes" button click + optional
+    confirmation dialog, polls the module API to verify the state changed
+    away from ``locked``, and reports the outcome.
+
+    Returns ``(unlocked, detail)`` where ``unlocked`` is True iff the API
+    no longer reports ``state == 'locked'`` after the click sequence.
+    Skips the click entirely (and reports True) if the module is already
+    in any non-locked state.
+    """
+    pre = fetch_module_via_api(cdp, module_id) or {}
+    pre_state = pre.get("state")
+    if pre_state and pre_state != "locked":
+        return True, f"already {pre_state!r}; skipping unlock"
+
+    # Make sure we're on the module's landing page (the unlock button is
+    # only rendered there). If we're on a different module's section, the
+    # button won't exist.
+    landing = f"https://academy.hackthebox.com/app/module/{module_id}"
+    cur = cdp.evaluate("window.location.href") or ""
+    if f"/app/module/{module_id}" not in cur:
+        navigate_and_wait(cdp, landing, timeout_s=20.0)
+        time.sleep(2.0)
+
+    res = cdp.evaluate(_UNLOCK_BUTTON_JS) or {}
+    if not res.get("clicked"):
+        return False, str(res.get("why") or "unknown")
+    # Some modules confirm; click the dialog's primary button if present.
+    time.sleep(1.0)
+    confirm = cdp.evaluate(_CONFIRM_UNLOCK_JS)
+    # Poll the modules API until state is no longer 'locked'.
+    deadline = time.time() + poll_seconds
+    while time.time() < deadline:
+        time.sleep(0.5)
+        post = fetch_module_via_api(cdp, module_id) or {}
+        post_state = post.get("state")
+        if post_state and post_state != "locked":
+            return True, f"unlocked: {pre_state!r} -> {post_state!r} ({confirm})"
+    return False, f"clicked but state still {pre_state!r} after {poll_seconds:.0f}s"
+
+
 def fetch_module_via_api(cdp: CDPClient, module_id: int | str) -> dict | None:
     """Fetch ``/api/v2/modules/<id>`` from inside the authenticated page.
 
@@ -692,4 +771,5 @@ __all__ = [
     "read_cube_balance",
     "scrape_section",
     "submit_answer_in_dom",
+    "unlock_module",
 ]

@@ -49,7 +49,7 @@ from htbrl.academy.auto_demo_writer import session_to_demonstration
 from htbrl.academy.cdp_walker import (
     CDPClient,
     build_section_from_scrape,
-    click_next,
+    click_next_and_advance,
     enter_module,
     fetch_module_via_api,
     go_to_first_section,
@@ -57,6 +57,7 @@ from htbrl.academy.cdp_walker import (
     parse_cheatsheet_markdown,
     read_cube_balance,
     scrape_section,
+    unlock_module,
 )
 from htbrl.academy.curriculum import check_unlock_gate
 from htbrl.academy.mitre_mapping import techniques_for_module
@@ -302,10 +303,11 @@ def walk_one_module(
         if section.section_total and section.section_index >= section.section_total:
             print("[walk-all]   reached final section")
             break
-        if not click_next(cdp):
-            print("[walk-all]   no Next button; stopping walk")
+        # Use the advance-aware variant so Vue Router transitions don't make
+        # us re-scrape the previous section ("already seen" loop break).
+        if not click_next_and_advance(cdp, current_idx=section.section_index):
+            print("[walk-all]   no Next button or section did not advance; stopping walk")
             break
-        time.sleep(section_sleep_s)
 
     module = AcademyModule(
         id=str(module_id),
@@ -385,8 +387,23 @@ def _build_argparser() -> argparse.ArgumentParser:
         help=(
             "comma-separated module states to include "
             f"(default {DEFAULT_INCLUDE_STATES!r}). "
-            "Common values: owned, in_progress, completed, locked."
+            "Common values: owned, in_progress, completed, locked. "
+            "Add ``locked`` together with --auto-unlock to spend cubes on "
+            "new modules during the walk."
         ),
+    )
+    p.add_argument(
+        "--auto-unlock", action="store_true",
+        help="when a planned module is in 'locked' state, spend cubes via "
+             "the academy UI to unlock it before walking. Operator-authorized "
+             "(2026-05-07: 'you can always open new modules'). Hard-bounded "
+             "by --max-cubes-per-run.",
+    )
+    p.add_argument(
+        "--max-cubes-per-run", type=int, default=50,
+        help="hard cap on cubes spent on auto-unlock during this run "
+             "(default 50). Stops auto-unlocking once cumulative spend "
+             "reaches the cap, even if more locked modules are planned.",
     )
     p.add_argument(
         "--force", action="store_true",
@@ -470,12 +487,58 @@ def main(argv: list[str] | None = None) -> int:
 
         answerer = HeuristicAnswerer()
 
+        cubes_spent_unlocking = 0
         for i, entry in enumerate(walks):
             print(f"\n[walk-all] === MODULE {i+1}/{len(walks)}: "
                   f"id={entry.id} {entry.title!r} ===")
 
             cubes_before = read_cube_balance(cdp)
             print(f"[walk-all]   cubes_balance before: {cubes_before}")
+
+            # Auto-unlock path. Per the operator's standing rule
+            # ("you can always open new modules"), if a planned module is
+            # locked AND --auto-unlock is set, spend cubes to unlock it
+            # before walking. Hard-bounded by --max-cubes-per-run.
+            if entry.state == "locked" and args.auto_unlock:
+                cost = entry.cubes_to_unlock or 0
+                if cubes_spent_unlocking + cost > args.max_cubes_per_run:
+                    msg = (f"would-be cube spend {cubes_spent_unlocking + cost} "
+                           f"exceeds --max-cubes-per-run {args.max_cubes_per_run}; "
+                           f"skipping this module's unlock")
+                    print(f"[walk-all]   AUTO-UNLOCK SKIPPED: {msg}")
+                    results.append(ModuleWalkResult(
+                        module_id=entry.id, title=entry.title,
+                        sections_walked=0, n_questions=0, n_attempted=0,
+                        n_turns=0, cheat_rows=0,
+                        skipped_reason=msg,
+                    ))
+                    continue
+                if (cubes_before or 0) < cost:
+                    msg = f"need {cost} cubes but balance is {cubes_before}"
+                    print(f"[walk-all]   AUTO-UNLOCK SKIPPED: {msg}")
+                    results.append(ModuleWalkResult(
+                        module_id=entry.id, title=entry.title,
+                        sections_walked=0, n_questions=0, n_attempted=0,
+                        n_turns=0, cheat_rows=0,
+                        skipped_reason=msg,
+                    ))
+                    continue
+                print(f"[walk-all]   AUTO-UNLOCK: spending {cost} cubes on module {entry.id}")
+                ok, detail = unlock_module(cdp, entry.id)
+                print(f"[walk-all]     -> ok={ok} {detail}")
+                if not ok:
+                    results.append(ModuleWalkResult(
+                        module_id=entry.id, title=entry.title,
+                        sections_walked=0, n_questions=0, n_attempted=0,
+                        n_turns=0, cheat_rows=0,
+                        error=f"unlock failed: {detail}",
+                    ))
+                    time.sleep(args.module_sleep_s)
+                    continue
+                cubes_spent_unlocking += cost
+                cubes_before = read_cube_balance(cdp)
+                print(f"[walk-all]   cubes_balance after unlock: {cubes_before} "
+                      f"(cumulative spend this run: {cubes_spent_unlocking})")
 
             try:
                 result = walk_one_module(
