@@ -27,7 +27,9 @@ If you run on different hardware, expect to revisit the model size, batch size, 
 ```
 
 ## Status
-**Phases 0–9 + 11 + 5b auto-learner.** Tool registry covers all 14 Enterprise tactics (73 tools) + 7 ICS dual-tagged. Full PPO loop runs end-to-end against the stub env; real `HTBEnv` works against a Kali attacker. HTB Academy auto-learner with study-only / auto-submit modes ships under `htbrl.academy`. The wizard now dispatches HTTP / LFI bypass / SSH-shell / **RFI-via-Kali-listener** / theory-cURL probes per question. **530 tests passing.**
+**Phases 0–9 + 11 + 5b auto-learner.** Tool registry covers all 14 Enterprise tactics (73 tools) + 7 ICS dual-tagged. Full PPO loop runs end-to-end against the stub env; real `HTBEnv` works against a Kali attacker. HTB Academy auto-learner with study-only / auto-submit modes ships under `htbrl.academy`. The wizard now dispatches HTTP / LFI bypass / SSH-shell / **RFI-via-Kali-listener** / theory-cURL probes per question. **535 tests passing.**
+
+The labs-plan execution recipe lives in [`LABS_PLAN.md`](LABS_PLAN.md). Doc set under [`docs/`](docs/) covers architecture, training pipeline, academy walking, labs walking, and troubleshooting.
 
 **End-to-end smoke status (2026-05-08):** every training/eval script runs cleanly on tiny inputs:
 | Phase | Script | Smoke outcome |
