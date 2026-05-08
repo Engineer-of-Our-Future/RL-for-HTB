@@ -115,11 +115,70 @@ def test_load_pool_missing_file_raises_filenotfound(tmp_path):
         load_pool(tmp_path / "doesnotexist.yaml")
 
 
-def test_load_pool_missing_boxes_key_raises_valueerror(tmp_path):
+def test_load_pool_missing_list_key_raises_valueerror(tmp_path):
     p = tmp_path / "bad.yaml"
     p.write_text("name: bad\nmatrix: enterprise\n", encoding="utf-8")
     with pytest.raises(ValueError, match="missing top-level"):
         load_pool(p)
+
+
+# ---- alternative top-level list keys (Sherlocks / Challenges) -------------
+
+
+def test_load_pool_accepts_sherlocks_top_level_key(tmp_path):
+    """Sherlock pool YAMLs use ``sherlocks:`` instead of ``boxes:``;
+    the loader treats them uniformly."""
+    pool_path = _write(tmp_path, "sherlocks.yaml", {
+        "name": "sherlocks",
+        "target_type": "sherlock",
+        "sherlocks": [
+            {"id": "htb-sherlocks:meerkat", "vip_only": False},
+            {"id": "htb-sherlocks:logjammer", "vip_only": True},
+        ],
+    })
+    pool = load_pool(pool_path, subscription="free")
+    assert [b["id"] for b in pool.boxes] == ["htb-sherlocks:meerkat"]
+    # The target_type metadata is preserved on raw for env-class routing.
+    assert pool.raw["target_type"] == "sherlock"
+
+
+def test_load_pool_accepts_challenges_top_level_key(tmp_path):
+    """Challenge pool YAMLs use ``challenges:``; same filter applies."""
+    pool_path = _write(tmp_path, "ch.yaml", {
+        "name": "challenges",
+        "target_type": "challenge",
+        "challenges": [
+            {"id": "htb-challenges:web:templated", "vip_only": False},
+            {"id": "htb-challenges:pwn:ropme", "vip_only": True},
+        ],
+    })
+    pool = load_pool(pool_path, subscription="vip")
+    assert [b["id"] for b in pool.boxes] == [
+        "htb-challenges:web:templated",
+        "htb-challenges:pwn:ropme",
+    ]
+
+
+def test_bundled_sherlocks_pool_loads_clean_under_free(repo_root):
+    """Sanity-check the bundled Sherlocks pool YAML."""
+    p = repo_root / "configs" / "env" / "htb_sherlocks_pool.yaml"
+    pool = load_pool(p, subscription="free")
+    assert not pool.empty
+    assert pool.raw.get("target_type") == "sherlock"
+    # At least one row should be filtered out (the VIP-only ones).
+    assert pool.n_filtered_out > 0
+
+
+def test_bundled_challenges_pool_loads_clean_under_free(repo_root):
+    """Sanity-check the bundled Challenges pool YAML."""
+    p = repo_root / "configs" / "env" / "htb_challenges_pool.yaml"
+    pool = load_pool(p, subscription="free")
+    assert not pool.empty
+    assert pool.raw.get("target_type") == "challenge"
+    assert pool.n_filtered_out > 0
+    # Per-row content_type narrows what env to use; spot-check one.
+    sample = pool.boxes[0]
+    assert sample.get("content_type") in ("challenge_instance", "challenge_static")
 
 
 def test_load_pool_boxes_not_a_list_raises_valueerror(tmp_path):

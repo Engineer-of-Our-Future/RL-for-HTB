@@ -1,0 +1,87 @@
+# HTB Challenges pool — CTF-style standalone puzzles.
+#
+# Challenges are smaller than Machines: each has ONE flag and a
+# specific category (Web, Pwn, Crypto, Reversing, Forensics, Stego,
+# OSINT, Hardware, Mobile, Misc, Blockchain).
+#
+# Two structural shapes (set per-row via ``content_type``):
+#
+#   - challenge_instance: spawn a docker on HTB, get IP:PORT, exploit
+#                         live (most Web + Pwn fall here). The agent's
+#                         existing HTBEnv mostly works here -- target
+#                         IP comes from HTB's spawn API rather than
+#                         a fixed lab range.
+#   - challenge_static:   download a `.zip` artefact (binary / web app
+#                         source / image / cipher text), reverse it
+#                         locally, submit the flag. No live target.
+#                         Closer to a Sherlock in shape.
+#
+# Subscription filter applies same as Machines/Sherlocks; ``vip_only:
+# true`` rows drop under --subscription=free.
+
+# @package _group_
+
+name: htb_challenges_pool_v1
+matrix: enterprise
+target_type: challenge               # generic; per-row content_type narrows it
+selection_policy: round_robin
+max_steps: 80
+wallclock_cap_seconds: 1200
+
+challenges:
+  # ---------- Free Challenges (rotation; check app.hackthebox.com/challenges) ----------
+  - id: htb-challenges:web:templated
+    difficulty: very_easy
+    vip_only: false
+    category: web
+    content_type: challenge_instance
+    notes: "SSTI in Flask Jinja2; baseline web challenge."
+
+  - id: htb-challenges:reversing:bypass
+    difficulty: very_easy
+    vip_only: false
+    category: reversing
+    content_type: challenge_static
+    artefacts: ["bypass.zip"]
+    notes: "Strings + ELF reading; baseline reversing."
+
+  - id: htb-challenges:crypto:weak-rsa
+    difficulty: easy
+    vip_only: false
+    category: crypto
+    content_type: challenge_static
+    artefacts: ["weak-rsa.zip"]
+    notes: "RSA with small primes; factordb / Wiener attack."
+
+  # ---------- VIP-only Challenges ----------
+  - id: htb-challenges:pwn:ropme
+    difficulty: medium
+    vip_only: true
+    category: pwn
+    content_type: challenge_instance
+    notes: "Classic ROP chain; VIP only."
+
+  - id: htb-challenges:web:upload-vuln
+    difficulty: medium
+    vip_only: true
+    category: web
+    content_type: challenge_instance
+    notes: "File upload bypass + LFI; VIP only."
+
+  - id: htb-challenges:forensics:bfs-tracer
+    difficulty: hard
+    vip_only: true
+    category: forensics
+    content_type: challenge_static
+    artefacts: ["memory-dump.zip"]
+    notes: "Volatility + bfs-tracer plugin; VIP only."
+
+# Operator notes:
+# - Pwn / Web / Reversing all benefit from a different env class than
+#   HTBEnv. The agent's tool registry already covers many of these
+#   tools (curl, gobuster, sqlmap, john, hashcat, ghidra, ...) so the
+#   action space exists -- only the env transport needs to vary.
+# - Static challenges are the easiest to RL-train against early
+#   (no spawn step, deterministic artefacts) but their reward shape
+#   is binary (flag or no flag) which makes credit assignment hard.
+#   Use Sherlock-style demo collection first.

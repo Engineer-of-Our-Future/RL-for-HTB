@@ -1,0 +1,74 @@
+# HTB Sherlocks pool — DFIR (digital forensics + incident response) cases.
+#
+# Sherlocks differ from Machines in shape:
+#   - No spawned VM. Operator downloads a `.zip` evidence pack
+#     (PCAPs, memory dumps, Sysmon logs, registry hives, etc).
+#   - The "agent" analyses local evidence with tools like Volatility,
+#     Wireshark, EvtxECmd, and answers a series of text questions
+#     (similar to academy module sub-questions).
+#   - No live network target -> HTBEnv's IP-allowlist + SSH-into-Kali
+#     model doesn't apply directly. A future SherlockEnv class will
+#     route to a forensics-tool registry instead of the network-
+#     reconnaissance one.
+#
+# Subscription filter applies the same way: ``vip_only: true`` rows
+# are dropped under --subscription=free.
+
+# @package _group_
+
+name: htb_sherlocks_pool_v1
+matrix: enterprise
+target_type: sherlock                # marks the env class to use
+selection_policy: round_robin
+max_steps: 50                        # forensic questions per Sherlock
+wallclock_cap_seconds: 1800
+
+sherlocks:
+  # ---------- Free Sherlocks (rotating, current as of 2026-05-08) ----------
+  # HTB rotates which Sherlocks are free; check
+  # app.hackthebox.com/sherlocks without VIP to see the current free
+  # set. Update this list when the rotation changes.
+  - id: htb-sherlocks:meerkat
+    difficulty: easy
+    vip_only: false
+    category: cloud
+    artefacts: ["splunk-logs.zip"]
+    notes: "AWS log review; Cloud-Init misconfig detection."
+
+  - id: htb-sherlocks:brutus
+    difficulty: very_easy
+    vip_only: false
+    category: linux-forensics
+    artefacts: ["auth.log.zip"]
+    notes: "SSH brute-force triage from auth.log."
+
+  # ---------- VIP-only Sherlocks ----------
+  - id: htb-sherlocks:logjammer
+    difficulty: medium
+    vip_only: true
+    category: windows-event-logs
+    artefacts: ["windows-evtx.zip"]
+    notes: "Sysmon + Security event correlation; VIP only."
+
+  - id: htb-sherlocks:campfire-1
+    difficulty: medium
+    vip_only: true
+    category: kerberos
+    artefacts: ["dc-evtx.zip"]
+    notes: "AS-REP roasting detection; VIP only."
+
+  - id: htb-sherlocks:i-like-to
+    difficulty: hard
+    vip_only: true
+    category: ransomware
+    artefacts: ["pcap-and-mft.zip"]
+    notes: "Ransomware deployment timeline; VIP only."
+
+# Operator notes:
+# - Sherlocks are best collected as DEMOS first (manual analysis with
+#   the operator narrating each step) before any RL training. The
+#   shape is closest to academy module Q&A, so the academy auto-
+#   demo-writer pattern (academy_section_read -> academy_answer x N)
+#   is the natural template.
+# - When --subscription=free, the rotating-free set is the training
+#   surface. After VIP, every Sherlock above lights up.

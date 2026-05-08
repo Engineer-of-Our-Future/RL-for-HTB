@@ -170,6 +170,32 @@ python scripts/eval.py `
 | 5. RM training | Operator labels ≥300 preferences via the UI |
 | 6. RLHF run | Steps 3 + 5 done; 3-7 days GPU time |
 
+## Surface coverage: Machines + Sherlocks + Challenges
+
+The agent doesn't only train against Machines — HTB has three
+distinct training surfaces, each with a separate pool YAML and a
+different env shape. Subscription filtering applies to all three.
+
+| Surface | Pool YAML | Env shape | Reward signal |
+|---|---|---|---|
+| Machines (incl. Starting Point) | `configs/env/htb_starting_pool.yaml`, `configs/env/htb_machines_pool.yaml` | `HTBEnv`: SSH-into-Kali, render bash command, parse output, target lives on HTB VPN | foothold / user-flag / root-flag captures + per-step penalty |
+| Sherlocks (DFIR) | `configs/env/htb_sherlocks_pool.yaml` | Future `SherlockEnv`: download evidence pack, run forensics tools (Volatility, Wireshark, EvtxECmd, …), answer N text sub-questions per case | per-question accept/reject (academy-style) |
+| Challenges (CTF) | `configs/env/htb_challenges_pool.yaml` | Mixed: per-row `content_type: challenge_instance` (spawn docker → exploit live) vs `content_type: challenge_static` (download artefact → analyse locally) | single flag per challenge |
+
+The pool loader (`htbrl.env.pool_loader`) reads any of these and
+applies the same subscription filter. The env class to use comes
+from each pool's `target_type` field (`machine` / `sherlock` /
+`challenge`).
+
+**Today (Machines path):** the labs plan steps 1–8 above cover the
+Machines surface end-to-end. Sherlocks + Challenges have pool YAMLs
+populated with starter entries, but their env classes are future
+work. They're tracked here so:
+1. The operator can grow the pool YAMLs as more free Sherlocks /
+   Challenges become available.
+2. The day a `SherlockEnv` lands, the configs are ready and only
+   the env class itself needs writing.
+
 ## Subscription tier (free vs VIP)
 
 The agent honors HTB subscription tier so it never spawns boxes the

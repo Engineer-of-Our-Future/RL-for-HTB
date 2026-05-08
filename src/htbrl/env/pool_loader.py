@@ -84,18 +84,34 @@ def load_pool(
         ``"free"`` if no token / probe fails.
 
     Raises FileNotFoundError if the YAML doesn't exist; ValueError if
-    the YAML is missing the ``boxes`` key.
+    none of the recognised list keys (``boxes``, ``sherlocks``,
+    ``challenges``) is present.
+
+    Different pool types use different top-level list keys to keep
+    YAMLs readable:
+      - Machines / Starting Point: ``boxes:``
+      - Sherlocks (DFIR): ``sherlocks:``
+      - Challenges (CTF): ``challenges:``
+    The loader accepts any of these and treats them uniformly. Use
+    the ``raw`` dict on the returned pool to read pool-type-specific
+    metadata (e.g. ``target_type`` to choose env class).
     """
     path = Path(yaml_path)
     if not path.exists():
         raise FileNotFoundError(f"pool YAML not found: {path}")
     with path.open("r", encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
-    if "boxes" not in raw or not isinstance(raw["boxes"], list):
-        raise ValueError(f"pool YAML missing top-level ``boxes`` list: {path}")
+
+    list_keys = ("boxes", "sherlocks", "challenges")
+    found_key = next((k for k in list_keys if isinstance(raw.get(k), list)), None)
+    if found_key is None:
+        raise ValueError(
+            f"pool YAML missing top-level list (expected one of "
+            f"{list_keys}): {path}"
+        )
 
     info = resolve(subscription, api_token=api_token)
-    all_boxes = list(raw["boxes"])
+    all_boxes = list(raw[found_key])
     filtered = filter_boxes_by_tier(all_boxes, info)
     return BoxPool(
         name=raw.get("name", path.stem),
