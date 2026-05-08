@@ -27,7 +27,20 @@ If you run on different hardware, expect to revisit the model size, batch size, 
 ```
 
 ## Status
-**Phases 0–9 + 11 + 5b auto-learner.** Tool registry covers all 14 Enterprise tactics (73 tools) + 7 ICS dual-tagged. Full PPO loop runs end-to-end against the stub env; real `HTBEnv` works against a WSL Kali attacker. HTB Academy auto-learner with study-only / auto-submit modes ships under `htbrl.academy`. The wizard now dispatches HTTP / LFI bypass / SSH-shell / theory-cURL probes per question, so module-23 filter-evasion and module-18 shell questions resolve without operator intervention. **504 tests passing.**
+**Phases 0–9 + 11 + 5b auto-learner.** Tool registry covers all 14 Enterprise tactics (73 tools) + 7 ICS dual-tagged. Full PPO loop runs end-to-end against the stub env; real `HTBEnv` works against a Kali attacker. HTB Academy auto-learner with study-only / auto-submit modes ships under `htbrl.academy`. The wizard now dispatches HTTP / LFI bypass / SSH-shell / **RFI-via-Kali-listener** / theory-cURL probes per question. **530 tests passing.**
+
+**End-to-end smoke status (2026-05-08):** every training/eval script runs cleanly on tiny inputs:
+| Phase | Script | Smoke outcome |
+|---|---|---|
+| 4 | live `HTBEnv` via SSH | `[ OK ] SSH whoami → claude` |
+| 5 | `train_bc.py` | 15 demos → 438 BC examples → 5 steps → checkpoint |
+| 6 | `train_ppo.py --env-type stub` | 2 rollouts, ev = -0.32 → -0.00 |
+| 8 | `train_rm.py` | 8 prefs → 1 epoch → checkpoint |
+| 8 | `serve_feedback.py` | FastAPI app boots, GET / → 200 |
+| 9 | RLHF composite reward | exercised by Phase 6 (`composite_reward(cfg=rlfh_cfg, …)`) |
+| 11 | `eval.py` | metrics JSON with foothold/user_flag/root_flag + MITRE coverage |
+
+**Gap to "production-ready":** real-scale runs (full-size BC training, multi-day PPO, 1500+ human preference labels, RLHF, held-out eval). The code is launch-ready; the GPU hours / human labelling time still have to be spent.
 
 ## HTB Academy auto-learner (Phase 5b)
 A separate progression path that reads HTB Academy modules, optionally drives the per-module SSH sandbox to derive answers, and writes every interaction to the same `Demonstration` format the BC trainer reads. Two modes:
