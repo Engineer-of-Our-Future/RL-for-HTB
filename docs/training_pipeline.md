@@ -99,7 +99,20 @@ python scripts\train_bc.py `
   --output .local\bc_smoke.pt
 ```
 
-Real run (GPU, full size):
+Mid-size smoke (GPU, ~10 min on 3060):
+
+```powershell
+python scripts\train_bc.py `
+  --demo-root data\auto_demos `
+  --demo-root data\demos `
+  --tokenizer-path tokenizer\v1.json `
+  --epochs 3 --batch-size 8 --max-steps 60 `
+  --d-model 128 --n-layers 4 --n-heads 4 --d-ff 512 `
+  --max-seq-len 256 --device cuda `
+  --output checkpoints\bc-mixed-smoke.pt
+```
+
+Real run (GPU, full size — multi-root mixes academy + lab demos):
 
 ```powershell
 python scripts\train_bc.py `
@@ -111,6 +124,7 @@ python scripts\train_bc.py `
   --max-seq-len 1024 --device cuda `
   --label-smoothing 0.05 `
   --lr 1e-4 `
+  --num-workers 4 `
   --output checkpoints\bc-mixed-v1.pt
 ```
 

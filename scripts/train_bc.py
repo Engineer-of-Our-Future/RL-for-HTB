@@ -111,7 +111,13 @@ def _collate(batch):
 
 def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--demo-root", type=Path, required=True, help="dir containing *.msgpack(.gz) demos")
+    p.add_argument(
+        "--demo-root", type=Path, required=True, action="append",
+        help=("dir containing *.msgpack(.gz) demos. Pass multiple times to "
+              "merge several roots, e.g. ``--demo-root data/auto_demos "
+              "--demo-root data/demos`` to mix Phase 5b academy demos with "
+              "manually-collected lab walks."),
+    )
     p.add_argument("--tokenizer-path", type=Path, required=True, help="ByteLevelBPE saved JSON")
     p.add_argument("--epochs", type=int, default=5)
     p.add_argument("--batch-size", type=int, default=32)
@@ -136,7 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     torch.manual_seed(args.seed)
 
     print(f"=== BC training ===")
-    print(f"  demo_root      : {args.demo_root}")
+    for r in args.demo_root:
+        print(f"  demo_root      : {r}")
     print(f"  tokenizer_path : {args.tokenizer_path}")
     print(f"  device         : {args.device}")
 
@@ -147,11 +154,22 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  tokenizer vocab_size = {tokenizer.vocab_size}")
     print(f"  registry tools       = {vocab.n_tools}")
 
-    # Dataset
-    raw_ds = DemoDataset(args.demo_root)
+    # Dataset (one DemoDataset per --demo-root; merge their paths so a
+    # mixed BC run reads from auto_demos + demos in one pass).
+    sub_datasets = [DemoDataset(r) for r in args.demo_root]
+    raw_ds = sub_datasets[0]
+    if len(sub_datasets) > 1:
+        merged_paths = []
+        for ds in sub_datasets:
+            merged_paths.extend(ds.paths)
+        # Use object.__new__ to bypass DemoDataset.__init__'s root-existence
+        # check; we just need a paths-aware iterable.
+        raw_ds = DemoDataset.__new__(DemoDataset)
+        raw_ds.root = sub_datasets[0].root
+        raw_ds.paths = merged_paths
     if args.matrix is not None:
         raw_ds = raw_ds.filter(matrix=args.matrix)
-    print(f"  loaded {len(raw_ds)} demos")
+    print(f"  loaded {len(raw_ds)} demos across {len(sub_datasets)} root(s)")
 
     # Phase 5b academy demos use synthetic tool names (academy_answer,
     # academy_section_read, academy_cheat_sheet, academy_module_intro,
