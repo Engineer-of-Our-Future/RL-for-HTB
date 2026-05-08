@@ -7,21 +7,34 @@ type: htb
 matrix: enterprise
 n_envs: 8
 
-# SSH session into Kali attacker
+# SSH session into Kali attacker. The default points at the operator's
+# laptop Kali (running OpenVPN to HTB labs). For the README's WSL2 setup,
+# override with `host: 127.0.0.1, port: 2222, user: htbrl,
+# identity_file: ~/.ssh/htbrl_kali`.
 kali_ssh:
-  host: 127.0.0.1
-  port: 2222
-  user: kali
-  # Use the system SSH agent or a key file; never plaintext password here.
-  identity_file: ~/.ssh/id_ed25519
+  host: 192.168.1.219
+  port: 22
+  user: claude
+  # Prefer key auth; password fallback for dev (resolved at runtime via
+  # HTBRL_KALI_PASSWORD env var, never written to disk here).
+  identity_file: ~/.ssh/htbrl_kali
   connect_timeout_seconds: 10
 
-# Targets the agent is allowed to scan / exploit. Outside this CIDR the env
-# refuses to render any command. Replace with your HTB tun0 subnet or a
-# dedicated lab subnet before training.
+# Targets the agent is allowed to scan / exploit. Outside these CIDRs
+# the env refuses to render any command (returns immediate -0.5 reward
+# and ends the episode). The list below matches the routes the HTB
+# Starting Point + Machines OpenVPN tunnels push:
+#   - 10.10.8.0/22        HTB lab range
+#   - 10.10.110.0/24      internal HTB
+#   - 10.13.37.0/24       Pwnbox (legacy)
+#   - 10.13.38.0/24       Pwnbox
+#   - 10.129.0.0/16       Starting Point + most lab machines
 target_allowlist_cidr:
-  - 10.10.10.0/24
-  - 10.10.11.0/24
+  - 10.10.8.0/22
+  - 10.10.110.0/24
+  - 10.13.37.0/24
+  - 10.13.38.0/24
+  - 10.129.0.0/16
 
 # Episode budget
 max_steps: 60
