@@ -1,0 +1,62 @@
+# Training target pool — HTB Starting Point boxes.
+#
+# scripts/train_ppo.py --target-pool configs/env/htb_starting_pool.yaml
+#
+# Each rollout, the env picks a box from this pool (round-robin or
+# random, see `selection_policy`). Boxes here CAN appear in the demo
+# set; they're the same boxes the BC pretraining read from.
+#
+# Held-out boxes (NEVER in this pool) live in
+# configs/eval/holdout_v1.yaml.
+
+# @package _group_
+
+name: htb_starting_pool_v1
+matrix: enterprise
+
+# Selection policy when picking a box per rollout:
+#   - round_robin: every box gets equal episode budget (best for early
+#                  training; ensures vocab coverage across kill chains)
+#   - random:      uniform random pick (good once BC is rich enough that
+#                  every box has a baseline solve rate; reduces order
+#                  effects in the curriculum)
+#   - difficulty_progressive: weights toward easier boxes initially then
+#                  shifts as `episodes_seen` crosses thresholds (advanced;
+#                  needs `progression_milestones` defined)
+selection_policy: round_robin
+
+# Per-rollout episode budgets. Match what train_ppo.py defaults to.
+max_steps: 128
+wallclock_cap_seconds: 600        # 10 min per episode
+
+# The training pool. Mirrors the docs/labs_walking.md "suggested target
+# list" from the labs plan. As you walk more boxes for demos, add them
+# here so PPO sees them too.
+boxes:
+  - id: htb-starting-point:meow
+    difficulty: trivial
+    notes: "Telnet enumeration, default creds. Smallest possible kill chain."
+
+  - id: htb-starting-point:fawn
+    difficulty: trivial
+    notes: "Anonymous FTP."
+
+  - id: htb-starting-point:dancing
+    difficulty: trivial
+    notes: "Anonymous SMB share + flag.txt download."
+
+  - id: htb-starting-point:redeemer
+    difficulty: trivial
+    notes: "Redis enumeration."
+
+  - id: htb-starting-point:funnel
+    difficulty: easy
+    notes: "FTP enum + Postgres tunnel via SSH local-forward."
+
+# Operator notes:
+#  - "Trivial" boxes are great for vocab coverage (they exercise nmap +
+#    one specific tool: telnet/ftp/smb/redis/etc.). PPO learns "what
+#    tool comes after a port-scan when port X is open" cheaply.
+#  - "Easy" boxes start to reward longer chains (recon -> exploit ->
+#    pivot). They're where the policy actually pays for itself vs the
+#    BC prior; train against them once trivial-box solve rate > 80%.
