@@ -170,6 +170,30 @@ python scripts/eval.py `
 | 5. RM training | Operator labels ≥300 preferences via the UI |
 | 6. RLHF run | Steps 3 + 5 done; 3-7 days GPU time |
 
+## Subscription tier (free vs VIP)
+
+The agent honors HTB subscription tier so it never spawns boxes the
+operator can't reach. Set via `--subscription`:
+
+| Mode | What it does |
+|---|---|
+| `free` (default) | Only `vip_only: false` boxes pass the filter. Starting Point + the rotating active-machine free set. |
+| `vip` | Every box in the pool passes — retired machines included. |
+| `auto` | Probes HTB's API with `HTB_API_TOKEN` env var; falls back to `free` if no token / probe fails. |
+
+Per-box `vip_only: bool` lives in the pool YAML
+(`configs/env/htb_starting_pool.yaml`,
+`configs/env/htb_machines_pool.yaml`,
+`configs/eval/holdout_v1.yaml`). `htbrl.env.subscription`
++ `htbrl.env.pool_loader` enforce the filter at load time.
+
+**Today (free account):** the default `--subscription=free` runs
+Starting Point + the small set of currently-free Active Machines.
+
+**When you upgrade to VIP:** flip `--subscription=vip` (or set
+`HTB_API_TOKEN` and use `auto`); every retired-easy / -medium box in
+the pool YAMLs lights up automatically — no code change.
+
 ## Out of scope
 
 - **Solving the 3 stuck academy questions** (mod 33 sec 518 chattr SQLi,

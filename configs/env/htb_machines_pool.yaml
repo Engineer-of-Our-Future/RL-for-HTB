@@ -1,0 +1,95 @@
+# Active + retired Machines pool — used after Starting Point demos.
+#
+# This pool is loaded with ``--subscription={free,vip,auto}`` filtering:
+#   - free: only ``vip_only: false`` boxes are kept (the small rotating
+#           set of Active Machines HTB exposes to free accounts).
+#   - vip / vip+: every box is kept (every retired machine + every
+#                 active machine).
+#   - auto: probes HTB's API with HTB_API_TOKEN; falls back to free.
+#
+# The list below is a STARTER. As the operator walks more machines,
+# add them here. The ``vip_only`` field is the source of truth for
+# the subscription filter; the agent's training scripts honor it.
+
+# @package _group_
+
+name: htb_machines_pool_v1
+matrix: enterprise
+selection_policy: round_robin
+max_steps: 200            # full machines have longer kill chains than SP
+wallclock_cap_seconds: 1800
+
+boxes:
+  # ---------- Free Active Machines (rotation, current as of 2026-05-08) ----------
+  # NB: HTB rotates which active machines are free roughly every couple
+  # of weeks. When this list goes stale, mark the rotated-out boxes
+  # ``vip_only: true`` (or remove) and add the new free ones. Easiest
+  # check: app.hackthebox.com/machines without VIP shows only free ones.
+  - id: htb-machines:headless
+    difficulty: easy
+    vip_only: false
+    os: linux
+    notes: "Active rotation. Free for non-VIP at time of writing."
+
+  - id: htb-machines:permx
+    difficulty: easy
+    vip_only: false
+    os: linux
+    notes: "Active rotation. Free for non-VIP."
+
+  # ---------- Retired Easy Machines (VIP only) ----------
+  # Operator: when you upgrade to VIP, flip these to active in your
+  # training pool by re-running training -- the filter auto-includes
+  # them. NO code change needed; just bump --subscription=vip.
+  - id: htb-machines:lame
+    difficulty: easy
+    vip_only: true
+    os: linux
+    retired: true
+    notes: "Classic. Samba 3.0.20 RCE. Tier-0 retired box; VIP only."
+
+  - id: htb-machines:legacy
+    difficulty: easy
+    vip_only: true
+    os: windows
+    retired: true
+    notes: "MS08-067 + MS17-010. Windows XP SMB exploit chain."
+
+  - id: htb-machines:devel
+    difficulty: easy
+    vip_only: true
+    os: windows
+    retired: true
+    notes: "IIS anonymous FTP -> ASPX webshell -> kernel exploit."
+
+  - id: htb-machines:beep
+    difficulty: easy
+    vip_only: true
+    os: linux
+    retired: true
+    notes: "Web app multi-CVE; great for exercising vuln-id parsing."
+
+  - id: htb-machines:optimum
+    difficulty: easy
+    vip_only: true
+    os: windows
+    retired: true
+    notes: "HFS RCE -> Win7 kernel priv-esc."
+
+  # ---------- Retired Medium Machines (VIP only) ----------
+  - id: htb-machines:cronos
+    difficulty: medium
+    vip_only: true
+    os: linux
+    retired: true
+    notes: "DNS zone transfer + SQLi + cron command injection."
+
+  - id: htb-machines:popcorn
+    difficulty: medium
+    vip_only: true
+    os: linux
+    retired: true
+    notes: "Torrent-host webapp upload bypass + dirtycow."
+
+# When you flip --subscription=vip, every retired box above lights up
+# as a training target. Until then the free rotation drives the pool.

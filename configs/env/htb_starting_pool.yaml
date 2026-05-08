@@ -32,25 +32,34 @@ wallclock_cap_seconds: 600        # 10 min per episode
 # The training pool. Mirrors the docs/labs_walking.md "suggested target
 # list" from the labs plan. As you walk more boxes for demos, add them
 # here so PPO sees them too.
+# All Starting Point boxes are free for every HTB account, so
+# ``vip_only: false`` everywhere here. The subscription filter
+# (htbrl.env.subscription) honors this field; with vip_only=true the
+# box is dropped from the pool when --subscription=free.
 boxes:
   - id: htb-starting-point:meow
     difficulty: trivial
+    vip_only: false
     notes: "Telnet enumeration, default creds. Smallest possible kill chain."
 
   - id: htb-starting-point:fawn
     difficulty: trivial
+    vip_only: false
     notes: "Anonymous FTP."
 
   - id: htb-starting-point:dancing
     difficulty: trivial
+    vip_only: false
     notes: "Anonymous SMB share + flag.txt download."
 
   - id: htb-starting-point:redeemer
     difficulty: trivial
+    vip_only: false
     notes: "Redis enumeration."
 
   - id: htb-starting-point:funnel
     difficulty: easy
+    vip_only: false
     notes: "FTP enum + Postgres tunnel via SSH local-forward."
 
 # Operator notes:
